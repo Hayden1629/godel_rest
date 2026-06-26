@@ -29,7 +29,9 @@ the tab stays logged in.
 
 ## Setup
 
-1. **Install dep:** `pip install -r requirements.txt` (only `requests`).
+1. **Install deps:** `pip install -r requirements.txt`. The token relay +
+   pollers only need `requests`; the analytics/model layer adds pandas, numpy,
+   statsmodels, matplotlib, streamlit, openpyxl and loguru.
 2. **Start the receiver** (leave running):
    ```bash
    cd godel_rest
@@ -192,6 +194,86 @@ signals / clusters are derived on demand, so they always reflect the latest data
 - Shrinkage guards small samples but does not fix look-ahead across the whole
   panel — validate top users **out-of-sample** before trusting them.
 - Many microcap tickers aren't tradeable size.
+
+## Financial statements + reverse-DCF model
+
+Type a ticker, pull its quarterly **income statement, balance sheet and cash
+flow** straight from Gödel (`<TICKER> EQ FA` under the hood), chart the standard
+modeling set, compute **real free cash flow** (operating cash flow − capex), and
+run an **EV-based reverse DCF** that solves for the FCF growth rate the market is
+pricing in.
+
+```
+analytics/
+  financials.py  Gödel consolidated_financials -> tidy period frame + Holt-Winters
+                 forecast + trend charts  (fetch_financials / plot_trends)
+  model.py       merges the 3 statements, derives FCF/margins, builds enterprise
+                 value, runs the reverse DCF, assembles the company card
+  research.py    price summary/technicals + Massive fundamentals + chart
+  massive.py     Massive API: company details (name/shares/desc) + fundamentals
+```
+
+### CLI
+
+```bash
+# full model: downloads 3 statements (CSV+JSON to output/), charts, reverse DCF
+python3 -m analytics.run model BSX
+python3 -m analytics.run model BSX --period ANN --forecast 12 \
+        --discount-rate 0.10 --terminal-growth 0.025 --years 10
+
+# just one statement's trends + forecast (ticker or a downloaded .xlsx path)
+python3 -m analytics.run fa BSX --statement cash_flow --period QTR --table
+```
+
+`model BSX` prints price / market cap / EV / TTM FCF / EV·FCF / implied-vs-
+historical FCF growth, and saves charts + statement files under `output/`.
+
+**How EV + FCF are sourced (no Gödel "DES" — that command is a dead DOM
+scraper):**
+
+| input | source |
+|-------|--------|
+| 3 statements | Gödel `GET /api/v1/consolidated_financials/{income_statement\|balance_sheet\|cash_flow}/{series_id}/{QTR\|ANN}` |
+| share price (last close) | Gödel `GET /api/v1/search?query=TICKER` |
+| shares outstanding, name, summary | Massive `GET /v3/reference/tickers/{T}` |
+| price history → beta / YTD / vol | Massive `GET /v2/aggs/...` (ticker + SPY) |
+
+`EV = price×shares + net debt` (debt − cash from the balance sheet). `FCF =
+operating cash flow − capex`. The reverse DCF bisects for the constant FCF
+growth that makes the discounted TTM-FCF stream equal EV, then compares it to
+the historical FCF CAGR.
+
+> Note: the cash-flow statement key is **`cash_flow`** (not
+> `cash_flow_statement`, which returns empty). Coverage gaps happen — some names
+> (e.g. DSGX) have only a balance sheet in Gödel/Massive, so FCF and the reverse
+> DCF can't be computed; the tools fall back to balance-sheet trends.
+
+### Interactive dashboard
+
+```bash
+python3 -m streamlit run dashboard/model_app.py   # then open http://localhost:8501
+```
+
+A ticker search box → company name + summary, a stat row (beta vs SPY, YTD, 1Y,
+vol, 52-week range), price+SMA chart, valuation cards, per-metric trend/forecast
+charts (only metrics with data), raw statement tabs with CSV downloads, and a
+**"🔧 Under the hood"** expander that lists every API call made for the ticker.
+
+> Streamlit caches imported submodules. After editing anything under
+> `analytics/` or `server/`, **restart the server** — its hot-reload only re-runs
+> the script, so newly added functions raise `AttributeError` until a restart.
+
+### API call logging
+
+Every Gödel and Massive call is logged via [loguru](https://loguru.readthedocs.io)
+to `~/.godel_rest/api.log` (rotating) and kept in an in-memory ring buffer
+(`server.api_client.recent_calls()`) that the dashboard renders. The `apiKey`
+query param is stripped before anything is buffered or written. Logs go to the
+file only, so the CLI stays quiet.
+
+```bash
+tail -f ~/.godel_rest/api.log
+```
 
 ## ToS caveat
 

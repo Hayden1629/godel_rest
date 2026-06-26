@@ -1,0 +1,36 @@
+# ── secrets / credentials (NEVER commit) ───────────────────────────────────
+# .env holds API keys; .har captures embed live Bearer JWT tokens
+.env
+.env.*
+*.har
+.token.json
+token.json
+*tokens*.json
+*secret*
+
+# ── local data sink / generated artifacts ──────────────────────────────────
+# output/ = generated charts, CSV/JSON exports, thesis HTML; xlsx = FA exports
+godel_rest.db
+*.db
+*.sqlite
+*.sqlite3
+output/
+*.xlsx
+*.png
+
+# ── logs ───────────────────────────────────────────────────────────────────
+*.log
+
+# ── python ─────────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# ── os / editor ────────────────────────────────────────────────────────────
+.DS_Store
+*.swp

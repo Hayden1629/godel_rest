@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "Godel Token Relay",
+  "version": "1.0",
+  "description": "Sniffs the api.godelterminal.com Bearer token from your logged-in session and relays it to a local poller.",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://app.godelterminal.com/*",
+    "http://127.0.0.1:8765/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Godel Token Relay"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://app.godelterminal.com/*"],
+      "js": ["inject.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://app.godelterminal.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "world": "ISOLATED"
+    }
+  ]
+}

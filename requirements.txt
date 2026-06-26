@@ -1,0 +1,23 @@
+# Core
+requests>=2.31.0
+loguru>=0.7.0
+pandas>=2.0.0
+numpy>=1.24.0
+scipy>=1.10.0
+scikit-learn>=1.3.0
+networkx>=3.0
+statsmodels>=0.14.0
+
+# Financials parsing / reporting
+openpyxl>=3.1.0
+markdown>=3.4.0
+
+# Charts / dashboard
+matplotlib>=3.5.0
+streamlit>=1.30.0
+plotly>=5.0.0
+
+# Optional: only needed for the (deprecated) FinBERT backend — not installed by
+# default. The lexicon + OpenRouter Kimi backends cover direction labeling.
+#   torch>=2.0.0
+#   transformers>=4.30.0
