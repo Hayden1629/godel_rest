@@ -56,6 +56,13 @@ python3 -m server.cli backfill --channels all                       # full histo
 python3 -m server.cli news        # stream top-news feed -> SQLite (30s poll)
 python3 -m server.cli news --important
 python3 -m server.cli trending    # ranked trending tickers by mentions (24H)
+python3 -m server.cli ratio AMD SOX                   # regress AMD on SOX, 6mo: beta, r2, std err, corr
+python3 -m server.cli ratio AMD SOX --months 12 --json   # 12mo window, JSON (--raw adds timeseries)
+python3 -m server.cli pair PLTR HIMS                  # beta-neutral pair-trade plan (long/short + share sizing)
+python3 -m server.cli pair AMD NVDA --capital 50000 --benchmark SPY --entry 2 --json
+python3 -m server.cli prices AMD                      # historical OHLCV, 6mo daily (table)
+python3 -m server.cli prices AMD --resolution 1W --months 12 --json   # weekly, JSON (programmatic)
+python3 -m server.cli prices AMD --months 6 --excel amd.xlsx          # write .xlsx (or --csv amd.csv)
 python3 -m server.cli discover    # api paths the extension saw the app call
 python3 -m server.cli raw /api/v1/trending --param timeframe=24H     # poke any path
 ```

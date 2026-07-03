@@ -87,6 +87,21 @@ def _record(method: str, path: str, params: dict | None,
     record(method, path, params, status, ms, host="godel")
 
 
+def _check(r: requests.Response, path: str) -> None:
+    """Raise the same token/rate/cloudflare errors get() does, shared by post()."""
+    if r.status_code == 401:
+        raise TokenExpired("401 from API — token rejected; relay a fresh one")
+    if r.status_code == 429:
+        ra = r.headers.get("Retry-After")
+        raise RateLimited(float(ra) if ra and ra.isdigit() else 5.0)
+    if r.status_code == 403:
+        # Cloudflare would surface here; the api host should not challenge.
+        raise RuntimeError(
+            f"403 from API (path={path}). If this is a Cloudflare challenge "
+            "the pure-poller assumption is broken; fall back to in-browser.")
+    r.raise_for_status()
+
+
 def get(path: str, params: dict | None = None, timeout: int = 15) -> dict:
     """GET an api.godelterminal.com path. `path` may be absolute or relative."""
     url = path if path.startswith("http") else f"{BASE}{path}"
@@ -95,17 +110,23 @@ def get(path: str, params: dict | None = None, timeout: int = 15) -> dict:
     try:
         r = requests.get(url, headers=_headers(), params=params, timeout=timeout)
         status = r.status_code
-        if r.status_code == 401:
-            raise TokenExpired("401 from API — token rejected; relay a fresh one")
-        if r.status_code == 429:
-            ra = r.headers.get("Retry-After")
-            raise RateLimited(float(ra) if ra and ra.isdigit() else 5.0)
-        if r.status_code == 403:
-            # Cloudflare would surface here; the api host should not challenge.
-            raise RuntimeError(
-                f"403 from API (path={path}). If this is a Cloudflare challenge "
-                "the pure-poller assumption is broken; fall back to in-browser.")
-        r.raise_for_status()
+        _check(r, path)
         return r.json()
     finally:
         _record("GET", path, params, status, (time.perf_counter() - start) * 1000)
+
+
+def post(path: str, body: dict, timeout: int = 30) -> dict:
+    """POST a JSON body to an api.godelterminal.com path. `path` may be
+    absolute or relative. Mirrors get()'s auth + error handling."""
+    url = path if path.startswith("http") else f"{BASE}{path}"
+    start = time.perf_counter()
+    status: int | str = "ERR"
+    try:
+        r = requests.post(url, headers={**_headers(), "Content-Type": "application/json"},
+                          json=body, timeout=timeout)
+        status = r.status_code
+        _check(r, path)
+        return r.json()
+    finally:
+        _record("POST", path, body, status, (time.perf_counter() - start) * 1000)

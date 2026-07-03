@@ -11,7 +11,7 @@ import argparse
 import json
 import time
 
-from . import api_client, backfill, chat, news, token_store
+from . import api_client, backfill, chat, news, pair_trade, prices, ratio, token_store
 from .sink import Sink
 
 
@@ -124,6 +124,95 @@ def cmd_discover(args):
         print("  " + ln)
 
 
+def cmd_ratio(args):
+    """Regress one ticker (y) against another (x) and print every stat:
+    beta, alpha, r, r-squared, std errors, t/p values, correlation, ratio."""
+    res = ratio.ratio_analysis(
+        args.y, args.x, months=args.months,
+        correlation_window=args.window,
+        from_ts=args.from_ts, to_ts=args.to_ts,
+    )
+    if args.json:
+        out = res if args.raw else {k: v for k, v in res.items() if k != "raw"}
+        print(json.dumps(out, indent=2))
+        return
+    y, x, w = res["y"], res["x"], res["window"]
+    reg, corr, rat = res["regression"], res["correlation"], res["ratio"]
+    frm = time.strftime("%Y-%m-%d", time.localtime(w["from"]))
+    to = time.strftime("%Y-%m-%d", time.localtime(w["to"]))
+    print(f"{y['ticker']} (y) regressed against {x['ticker']} (x)")
+    print(f"  y: {y['name']} [series {y['series_id']}] last={res['ylast']}")
+    print(f"  x: {x['name']} [series {x['series_id']}] last={res['xlast']}")
+    print(f"  window: {frm} -> {to} ({w['months']}mo)  corrWindow={corr['window']}")
+    print("  regression:")
+    for k in ("beta", "adjustedBeta", "alpha", "r", "rsquared", "stdDevError",
+              "stdErrorAlpha", "stdErrorBeta", "significance", "ttest",
+              "lastTValue", "lastPValue"):
+        if k in reg:
+            print(f"    {k:14} {reg[k]}")
+    print(f"  correlation: last={corr['last']} low={corr['low']} high={corr['high']}")
+    print(f"  ratio:       last={rat['last']} low={rat['low']} high={rat['high']}")
+
+
+def cmd_pair(args):
+    """Build a beta-neutral pair trade for two tickers."""
+    res = pair_trade.analyze_pair(
+        args.a, args.b, benchmark=args.benchmark, capital=args.capital,
+        months=args.months, entry_z=args.entry,
+    )
+    if args.json:
+        print(json.dumps(res, indent=2))
+        return
+    p, rel, r, mb = res["pair"], res["relationship"], res["ratio"], res["market_beta"]
+    print(f"PAIR  {p['a']} vs {p['b']}   (market beta vs {p['benchmark']})")
+    print(f"  relationship: corr={rel['correlation']:.3f} "
+          f"r2={rel['rsquared']:.3f} hedge_beta({p['a']}~{p['b']})={rel['hedge_beta_a_on_b']:.3f}")
+    hl = r["half_life_days"]
+    print(f"  ratio {p['a']}/{p['b']}: last={r['last']:.4f} mean={r['mean']:.4f} "
+          f"z={r['z']:+.2f} pct={r['percentile']*100:.0f}%  "
+          f"half-life={hl:.1f}d" if hl else
+          f"  ratio {p['a']}/{p['b']}: last={r['last']:.4f} mean={r['mean']:.4f} "
+          f"z={r['z']:+.2f} pct={r['percentile']*100:.0f}%  half-life=n/a")
+    print(f"  market beta: {p['a']}={mb[p['a']]:.3f}  {p['b']}={mb[p['b']]:.3f}")
+    print(f"\n  SIGNAL: {res['signal']}  (entry |z|>{r['entry_z']})")
+    s = res["sizing"]
+    if s:
+        for leg in (s["long"], s["short"]):
+            print(f"    {leg['side']:5} {leg['ticker']:6} {leg['shares']:>6} sh "
+                  f"@ {leg['price']:.2f} = ${leg['dollars']:>10,.2f}  (beta {leg['beta']:.2f})")
+        print(f"    net market-beta exposure: ${s['net_beta_dollars']:,.2f} "
+              f"({s['net_beta_pct_of_capital']*100:+.2f}% of ${s['capital']:,.0f} capital)")
+    for w in res["warnings"]:
+        print(f"  ! {w}")
+
+
+def cmd_prices(args):
+    """Historical OHLCV prices for a ticker. Prints a table, JSON, or writes
+    an Excel/CSV file."""
+    res = prices.historical_prices(
+        args.ticker, resolution=args.resolution, months=args.months,
+        from_ts=args.from_ts, to_ts=args.to_ts, count_back=args.count,
+    )
+    if args.excel:
+        prices.to_excel(res, args.excel)
+        print(f"wrote {res['count']} bars -> {args.excel}")
+        return
+    if args.csv:
+        prices.to_csv(res, args.csv)
+        print(f"wrote {res['count']} bars -> {args.csv}")
+        return
+    if args.json:
+        out = res if args.raw else {k: v for k, v in res.items() if k != "raw"}
+        print(json.dumps(out, indent=2))
+        return
+    print(f"{res['ticker']} {res['name']} [series {res['series_id']}] "
+          f"{res['resolution']}  ({res['count']} bars)")
+    print(f"{'date':<12}{'open':>12}{'high':>12}{'low':>12}{'close':>12}{'volume':>16}")
+    for b in res["bars"]:
+        print(f"{b['date']:<12}{b['open']:>12}{b['high']:>12}{b['low']:>12}"
+              f"{b['close']:>12}{b['volume']:>16,.0f}")
+
+
 def cmd_raw(args):
     params = dict(p.split("=", 1) for p in args.param) if args.param else None
     print(json.dumps(api_client.get(args.path, params=params), indent=2))
@@ -173,6 +262,58 @@ def main():
     ch.set_defaults(func=cmd_channels)
 
     sub.add_parser("discover").set_defaults(func=cmd_discover)
+
+    ra = sub.add_parser("ratio",
+                        help="regress ticker y against ticker x (beta, r2, std err, ...)")
+    ra.add_argument("y", help="dependent ticker, e.g. AMD")
+    ra.add_argument("x", help="independent ticker / benchmark, e.g. SOX")
+    ra.add_argument("--months", type=float, default=ratio.DEFAULT_MONTHS,
+                    help="lookback months (default 6); ignored if --from given")
+    ra.add_argument("--window", type=int, default=ratio.DEFAULT_CORRELATION_WINDOW,
+                    help="rolling correlation window (default 120)")
+    ra.add_argument("--from", dest="from_ts", type=int, default=None,
+                    help="explicit window start (unix seconds)")
+    ra.add_argument("--to", dest="to_ts", type=int, default=None,
+                    help="explicit window end (unix seconds; default now)")
+    ra.add_argument("--json", action="store_true", help="emit JSON")
+    ra.add_argument("--raw", action="store_true",
+                    help="with --json, include the full API payload (timeseries)")
+    ra.set_defaults(func=cmd_ratio)
+
+    pa = sub.add_parser("pair",
+                        help="beta-neutral pair-trade plan for two tickers")
+    pa.add_argument("a", help="first ticker, e.g. PLTR")
+    pa.add_argument("b", help="second ticker, e.g. HIMS")
+    pa.add_argument("--benchmark", default=pair_trade.DEFAULT_BENCHMARK,
+                    help="market proxy for beta (default SPY)")
+    pa.add_argument("--capital", type=float, default=pair_trade.DEFAULT_CAPITAL,
+                    help="gross capital to deploy across both legs")
+    pa.add_argument("--months", type=float, default=ratio.DEFAULT_MONTHS,
+                    help="lookback months (default 6)")
+    pa.add_argument("--entry", type=float, default=pair_trade.DEFAULT_ENTRY_Z,
+                    help="|z| entry threshold (default 1.5)")
+    pa.add_argument("--json", action="store_true", help="emit JSON")
+    pa.set_defaults(func=cmd_pair)
+
+    hp = sub.add_parser("prices",
+                        help="historical OHLCV prices for a ticker (JSON/Excel/CSV)")
+    hp.add_argument("ticker", help="ticker, e.g. AMD")
+    hp.add_argument("--resolution", default=prices.DEFAULT_RESOLUTION,
+                    help="1,5,15,30,60,1D,1W,1M (default 1D)")
+    hp.add_argument("--months", type=float, default=prices.DEFAULT_MONTHS,
+                    help="lookback months (default 6); ignored if --from or --count given")
+    hp.add_argument("--from", dest="from_ts", type=int, default=None,
+                    help="window start (unix seconds)")
+    hp.add_argument("--to", dest="to_ts", type=int, default=None,
+                    help="window end (unix seconds; default now)")
+    hp.add_argument("--count", type=int, default=None,
+                    help="return exactly N most-recent bars (overrides the window)")
+    hp.add_argument("--json", action="store_true", help="emit JSON")
+    hp.add_argument("--raw", action="store_true",
+                    help="with --json, include the full API payload")
+    hp.add_argument("--excel", metavar="PATH", help="write bars to an .xlsx file")
+    hp.add_argument("--csv", metavar="PATH", help="write bars to a .csv file")
+    hp.set_defaults(func=cmd_prices)
 
     r = sub.add_parser("raw")
     r.add_argument("path")

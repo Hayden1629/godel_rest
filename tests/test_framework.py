@@ -57,6 +57,43 @@ def main():
     thesis.build_report("AAPL", out_dir="output", log=lambda *_: None)
     check("deterministic (identical md on rerun)", md.read_text() == first)
 
+    print("ratio analysis (Gödel ratio-analysis API)")
+    from server import ratio as ratio_mod
+    s = ratio_mod.resolve_series("AMD")
+    check("resolve ticker -> series", s.series_id == 4678082, f"{s.series_id}")
+    rr = ratio_mod.ratio_analysis("AMD", "SOX", months=6)
+    reg = rr.get("regression", {})
+    check("regression has beta/rsquared/stderr",
+          all(k in reg for k in ("beta", "rsquared", "stdErrorBeta")),
+          f"beta={reg.get('beta')}")
+    check("6mo window ~180 days",
+          179 <= (rr["window"]["to"] - rr["window"]["from"]) / 86400 <= 181)
+    check("correlation + ratio summarised",
+          rr["correlation"]["last"] is not None and rr["ratio"]["last"] is not None)
+
+    print("beta-neutral pair trade")
+    from server import pair_trade
+    pp = pair_trade.analyze_pair("AMD", "NVDA", capital=10_000)
+    check("market beta for both legs",
+          all(t in pp["market_beta"] for t in ("AMD", "NVDA")))
+    check("signal emitted", isinstance(pp["signal"], str) and pp["signal"])
+    if pp["sizing"]:
+        net = abs(pp["sizing"]["net_beta_dollars"])
+        check("legs are beta-neutral (net ~0)", net < 1.0, f"net=${net}")
+        check("share counts positive",
+              pp["sizing"]["long"]["shares"] > 0 and pp["sizing"]["short"]["shares"] > 0)
+
+    print("historical prices (Gödel tv-advanced/bars)")
+    from server import prices as hp
+    pr2 = hp.historical_prices("AMD", resolution="1D", months=6)
+    check("bars returned", pr2["count"] > 50, f"{pr2['count']} bars")
+    check("bars in window",
+          pr2["bars"][0]["time"] >= pr2["window"]["from"] - 5 * 86400)
+    check("ohlcv fields present",
+          all(k in pr2["bars"][-1] for k in ("open", "high", "low", "close", "volume")))
+    pr3 = hp.historical_prices("AMD", count_back=5)
+    check("count_back returns N bars", pr3["count"] == 5, f"{pr3['count']}")
+
     print("safety: no trading")
     import os
     os.environ.pop("GODEL_ALLOW_TRADING", None)
