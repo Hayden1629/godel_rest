@@ -11,7 +11,7 @@ import argparse
 import json
 import time
 
-from . import api_client, backfill, chat, news, pair_trade, prices, ratio, token_store
+from . import api_client, backfill, chat, news, pair_trade, prices, ratio, research, token_store
 from .sink import Sink
 
 
@@ -213,6 +213,49 @@ def cmd_prices(args):
               f"{b['close']:>12}{b['volume']:>16,.0f}")
 
 
+def cmd_research_list(args):
+    rows, total = research.list_page(offset=args.offset, limit=args.limit)
+    print(f"page: offset={args.offset} limit={args.limit}  total_items={total:,}"
+          f"  total_pages={-(-total // args.limit):,}")
+    for r in rows:
+        tickers = ",".join(r.get("ticker") or []) or "-"
+        print(f"  [{r['id']}] {r.get('date')}  {r.get('provider')}  ({tickers})  "
+              f"{(r.get('title') or '')[:80]}")
+
+
+def cmd_research_fetch(args):
+    for rid in args.ids:
+        row = research.get_by_id(rid) or {"id": rid, "title": f"id{rid}"}
+        path = research.download_one(row)
+        print(f"saved {path}  ({row.get('provider', '?')} / {row.get('date', '?')})")
+
+
+def cmd_research_sync(args):
+    n = research.sync_metadata(delay=args.delay)
+    c = research.counts()
+    print(f"synced {n} rows this run. db totals: {c['total']} total, "
+          f"{c['downloaded']} downloaded, {c['pending']} pending, {c['errored']} errored")
+
+
+def cmd_research_status(args):
+    c = research.counts()
+    print(f"research.db ({research.DB_PATH}):")
+    print(f"  total:      {c['total']:,}")
+    print(f"  downloaded: {c['downloaded']:,}")
+    print(f"  pending:    {c['pending']:,}")
+    print(f"  errored:    {c['errored']:,}")
+
+
+def cmd_research_backfill(args):
+    res = research.download_pending(limit=args.limit, delay=args.delay,
+                                     min_free_gb=args.min_free_gb)
+    print(f"attempted {res['attempted']} ({res['ok']} ok, {res['failed']} failed)")
+    if res["stopped_low_disk"]:
+        print(f"stopped early: free disk space fell below {args.min_free_gb}GB. "
+              "Re-run once you've freed/added space -- already-downloaded reports "
+              "are skipped automatically.")
+
+
 def cmd_raw(args):
     params = dict(p.split("=", 1) for p in args.param) if args.param else None
     print(json.dumps(api_client.get(args.path, params=params), indent=2))
@@ -314,6 +357,33 @@ def main():
     hp.add_argument("--excel", metavar="PATH", help="write bars to an .xlsx file")
     hp.add_argument("--csv", metavar="PATH", help="write bars to a .csv file")
     hp.set_defaults(func=cmd_prices)
+
+    rl = sub.add_parser("research-list",
+                        help="page through RES report metadata (id/title/provider/date), no download")
+    rl.add_argument("--offset", type=int, default=0)
+    rl.add_argument("--limit", type=int, default=research.PAGE_SIZE)
+    rl.set_defaults(func=cmd_research_list)
+
+    rf = sub.add_parser("research-fetch",
+                        help="download specific report ids as PDFs (test a couple first)")
+    rf.add_argument("ids", nargs="+", type=int)
+    rf.set_defaults(func=cmd_research_fetch)
+
+    rs = sub.add_parser("research-sync",
+                        help="upsert metadata for every RES report into research.db (no PDFs)")
+    rs.add_argument("--delay", type=float, default=0.15)
+    rs.set_defaults(func=cmd_research_sync)
+
+    rst = sub.add_parser("research-status", help="research.db totals: downloaded/pending/errored")
+    rst.set_defaults(func=cmd_research_status)
+
+    rb = sub.add_parser("research-backfill",
+                        help="download every not-yet-downloaded report's PDF (resumable)")
+    rb.add_argument("--limit", type=int, default=None, help="cap this run (omit for all pending)")
+    rb.add_argument("--delay", type=float, default=0.5, help="seconds between downloads")
+    rb.add_argument("--min-free-gb", type=float, default=5.0, dest="min_free_gb",
+                     help="stop once free disk space drops below this many GB")
+    rb.set_defaults(func=cmd_research_backfill)
 
     r = sub.add_parser("raw")
     r.add_argument("path")

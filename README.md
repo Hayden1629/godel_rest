@@ -282,7 +282,50 @@ file only, so the CLI stays quiet.
 tail -f ~/.godel_rest/api.log
 ```
 
+## Research reports (RES)
+
+Downloads the sell-side research PDFs your Gödel subscription entitles you to
+(analyst notes, "First Take"s, sector strategy pieces, etc.), tracked in their
+own SQLite file so the catalog and download state stay separate from the chat
+archive.
+
+```
+server/research.py   listing (public Supabase table, no login) + PDF download
+                      (app.godelterminal.com/api/fetchResearch, session-cookie
+                      auth reusing the same token the extension already relays)
+research.db           one row per report: metadata + downloaded/pdf_path/error
+```
+
+```bash
+# 1. build/refresh the catalog (metadata only, no PDFs -- cheap, ~10-20 min for
+#    all ~850k rows). Safe to re-run anytime to pick up newly published reports.
+python3 -m server.cli research-sync
+
+python3 -m server.cli research-status     # totals: downloaded / pending / errored
+
+# 2. download PDFs for everything not yet downloaded, newest first. Resumable
+#    (already-downloaded rows are skipped) and self-limiting: stops before
+#    filling the disk instead of crashing mid-write.
+nohup python3 -m server.cli research-backfill --delay 0.5 > research_backfill.log 2>&1 &
+tail -f research_backfill.log
+
+# just test on a couple ids first, or cap a run:
+python3 -m server.cli research-fetch 907603 907602
+python3 -m server.cli research-backfill --limit 20
+python3 -m server.cli research-backfill --min-free-gb 10   # bigger safety floor
+```
+
+PDFs land under `output/research_pdfs/<year>/` (sharded by report year -- one
+flat directory with hundreds of thousands of files is rough on Finder/Spotlight).
+At ~300KB/report, downloading the full catalog is on the order of 250GB+ --
+check free space before running an unbounded backfill.
+
 ## ToS caveat
 
 Replaying the session token to pull these feeds likely violates Gödel
-Terminal's ToS. Operational/legal risk is the user's call.
+Terminal's ToS; for RES specifically, a paid subscription is what entitles you
+to download these reports in the first place (same action the UI's download
+button performs, just automated) -- but bulk-downloading the entire catalog at
+once is a different scale of use than clicking through individually, so treat
+this as the same user-call tradeoff as chat/news, not a green light to
+redistribute the PDFs anywhere.
