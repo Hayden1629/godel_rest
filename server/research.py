@@ -67,10 +67,17 @@ CREATE TABLE IF NOT EXISTS research_reports (
     download_error TEXT,
     inserted_at    TEXT
 );
+-- also serves iter_pending's keyset page (WHERE downloaded=0 AND id<? ORDER BY
+-- id DESC): `id` is INTEGER PRIMARY KEY, i.e. the rowid, so this index's
+-- entries are already ordered by it within each `downloaded` value and the
+-- range scan comes free. A separate (downloaded, id) index adds nothing.
 CREATE INDEX IF NOT EXISTS idx_research_downloaded ON research_reports(downloaded);
 CREATE INDEX IF NOT EXISTS idx_research_date ON research_reports(date);
 CREATE INDEX IF NOT EXISTS idx_research_provider ON research_reports(provider);
 """
+
+
+BUSY_TIMEOUT_MS = 30_000
 
 
 def connect() -> sqlite3.Connection:
@@ -80,6 +87,11 @@ def connect() -> sqlite3.Connection:
     # lost final commit only means re-downloading a few reports we can re-fetch.
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
+    # SQLite still allows only one writer at a time. Without a busy timeout,
+    # a second writer (a `research-sync` run refreshing the catalog while a
+    # backfill is going) fails instantly with "database is locked" instead of
+    # waiting out the other transaction, which is measured in milliseconds.
+    conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
     conn.executescript(SCHEMA)
     return conn
 
@@ -341,41 +353,48 @@ def download_one(row: dict, out_dir: Path | None = None, skip_existing: bool = T
     return path
 
 
-def pending_ids(conn: sqlite3.Connection, limit: int | None = None) -> list[dict]:
-    q = "SELECT * FROM research_reports WHERE downloaded = 0 ORDER BY date DESC, id DESC"
-    if limit:
-        q += f" LIMIT {int(limit)}"
-    cur = conn.execute(q)
-    cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
-
-
 def iter_pending(limit: int | None = None, chunk: int = 2000):
-    """Stream pending rows on a dedicated read connection.
+    """Stream pending rows, one short-lived read transaction per chunk.
 
-    Two reasons this isn't `pending_ids`: `SELECT *` over ~880k pending rows
-    materializes about a gigabyte of dicts, and the backfill flips
-    `downloaded` on the write connection while we read -- iterating a cursor
-    over rows the same connection is mutating is asking for trouble. Paging by
-    id keeps memory flat and the read snapshot stable."""
-    read = sqlite3.connect(str(DB_PATH))
+    `SELECT *` over ~880k pending rows would materialize about a gigabyte of
+    dicts, so this pages. It pages by *keyset* rather than holding one cursor
+    open, because a cursor left open for a 50-hour backfill is a read
+    transaction left open for 50 hours -- and in WAL mode nothing can
+    checkpoint past the oldest live reader, so the -wal file would grow to
+    hold every write of the entire run. Opening and closing per chunk keeps
+    the WAL recycling normally.
+
+    Paging descends by id (not date, which is nullable and would silently
+    strand rows in a row-value comparison). ids are assigned in ingest order,
+    so this is still approximately newest-first, and rows the backfill marks
+    downloaded simply drop out of later pages."""
     yielded = 0
-    try:
-        cur = read.execute(
-            "SELECT * FROM research_reports WHERE downloaded = 0 "
-            "ORDER BY date DESC, id DESC")
-        cols = [d[0] for d in cur.description]
-        while True:
-            batch = cur.fetchmany(chunk)
-            if not batch:
+    after: int | None = None
+    while True:
+        read = sqlite3.connect(str(DB_PATH))
+        read.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+        try:
+            if after is None:
+                cur = read.execute(
+                    "SELECT * FROM research_reports WHERE downloaded = 0 "
+                    "ORDER BY id DESC LIMIT ?", (chunk,))
+            else:
+                cur = read.execute(
+                    "SELECT * FROM research_reports WHERE downloaded = 0 "
+                    "AND id < ? ORDER BY id DESC LIMIT ?", (after, chunk))
+            cols = [d[0] for d in cur.description]
+            batch = cur.fetchall()
+        finally:
+            read.close()
+        if not batch:
+            return
+        for row in batch:
+            d = dict(zip(cols, row))
+            after = d["id"]
+            yield d
+            yielded += 1
+            if limit and yielded >= limit:
                 return
-            for row in batch:
-                yield dict(zip(cols, row))
-                yielded += 1
-                if limit and yielded >= limit:
-                    return
-    finally:
-        read.close()
 
 
 def pending_count(conn: sqlite3.Connection) -> int:
