@@ -74,8 +74,7 @@ News options: `--important --interval 30`.
 ### Channels
 
 63 channels total. The valuable community rooms are `type=user_write`:
-`general, biotech, options, sellside, buyside, quant, smallcaps, crypto, fx,
-bonds, energy, politics, …` plus `paid` (`user_only`) and `pikers`
+`general, biotech, options, sellside, buyside, quant, smallcaps, crypto, fx, bonds, energy, politics, …` plus `paid` (`user_only`) and `pikers`
 (`public_write`). `symbol` channels are per-ticker rooms; `dm` are private.
 Run `channels` for the full id/title map.
 
@@ -116,17 +115,17 @@ SQLite at `godel_rest/godel_rest.db`:
 
 ## Status / next
 
-- [x] Extension token relay (MAIN-world hook) + local receiver + SQLite sink.
-- [x] **Task 1 confirmed** — `verify` returns 200 server-side, no Cloudflare.
-- [x] Chat poller (multi-channel, dedup, ticker tagging). Tested on 4 channels.
-- [x] Channel enumeration via `/api/chat/channels` (63 channels mapped).
-- [x] News poller — `/api/v1/top-news-items` (`?important=true` supported).
-- [x] Trending — `/api/v1/trending?timeframe=24H` (ranked by mentions).
-- [x] Endpoint discovery logger in the extension.
+- [X] Extension token relay (MAIN-world hook) + local receiver + SQLite sink.
+- [X] **Task 1 confirmed** — `verify` returns 200 server-side, no Cloudflare.
+- [X] Chat poller (multi-channel, dedup, ticker tagging). Tested on 4 channels.
+- [X] Channel enumeration via `/api/chat/channels` (63 channels mapped).
+- [X] News poller — `/api/v1/top-news-items` (`?important=true` supported).
+- [X] Trending — `/api/v1/trending?timeframe=24H` (ranked by mentions).
+- [X] Endpoint discovery logger in the extension.
 - [ ] Breaking news — old `/api/fetchBreaking` is 404. Find the replacement via
-      `discover` (open the News/breaking window in the app).
+  `discover` (open the News/breaking window in the app).
 - [ ] Cursor param for history backfill (response gives `prevCursor`; test
-      `?cursor=`/`?before=`/`?prevCursor=` via `raw`).
+  `?cursor=`/`?before=`/`?prevCursor=` via `raw`).
 - [ ] Confirm `createdAt` is UTC.
 - [ ] More text commands (DES/FA/ANR/etc.) once their endpoints are discovered.
 
@@ -238,15 +237,14 @@ historical FCF growth, and saves charts + statement files under `output/`.
 **How EV + FCF are sourced (no Gödel "DES" — that command is a dead DOM
 scraper):**
 
-| input | source |
-|-------|--------|
-| 3 statements | Gödel `GET /api/v1/consolidated_financials/{income_statement\|balance_sheet\|cash_flow}/{series_id}/{QTR\|ANN}` |
-| share price (last close) | Gödel `GET /api/v1/search?query=TICKER` |
-| shares outstanding, name, summary | Massive `GET /v3/reference/tickers/{T}` |
-| price history → beta / YTD / vol | Massive `GET /v2/aggs/...` (ticker + SPY) |
+| input                             | source                                                                                                         |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| 3 statements                      | Gödel`GET /api/v1/consolidated_financials/{income_statement\|balance_sheet\|cash_flow}/{series_id}/{QTR\|ANN}` |
+| share price (last close)          | Gödel`GET /api/v1/search?query=TICKER`                                                                      |
+| shares outstanding, name, summary | Massive`GET /v3/reference/tickers/{T}`                                                                       |
+| price history → beta / YTD / vol | Massive`GET /v2/aggs/...` (ticker + SPY)                                                                     |
 
-`EV = price×shares + net debt` (debt − cash from the balance sheet). `FCF =
-operating cash flow − capex`. The reverse DCF bisects for the constant FCF
+`EV = price×shares + net debt` (debt − cash from the balance sheet). `FCF = operating cash flow − capex`. The reverse DCF bisects for the constant FCF
 growth that makes the discounted TTM-FCF stream equal EV, then compares it to
 the historical FCF CAGR.
 
@@ -315,10 +313,74 @@ python3 -m server.cli research-backfill --limit 20
 python3 -m server.cli research-backfill --min-free-gb 10   # bigger safety floor
 ```
 
-PDFs land under `output/research_pdfs/<year>/` (sharded by report year -- one
-flat directory with hundreds of thousands of files is rough on Finder/Spotlight).
-At ~300KB/report, downloading the full catalog is on the order of 250GB+ --
-check free space before running an unbounded backfill.
+### Where it writes
+
+PDFs land under `<PDF_DIR>/<year>/<month>/`. The catalog spans 1982-2026 and
+recent years hold 50k+ reports each, so month shards keep directories to a few
+thousand files; look reports up via `research.db`'s `pdf_path`, not by browsing.
+
+Both paths are environment-overridable, so the corpus can live on a big
+external volume while the repo stays on the system disk:
+
+```bash
+export GODEL_RESEARCH_DIR=/media/<you>/<DRIVE>/godel_research/research_pdfs
+export GODEL_RESEARCH_DB=/path/to/repo/research.db   # default: repo root
+```
+
+Keep `research.db` on a real local filesystem. SQLite locking is unreliable on
+NTFS/exFAT/network mounts, and the backfill writes a row per completed
+download -- the PDFs are fine out there, the database is not.
+
+**Sizing.** A 32-report sample spread across the catalog measured mean 1.1MB /
+median 528KB per PDF -- the distribution is heavily right-skewed (a 4MB
+strategy deck against a 200KB one-page note). Against 878,686 reports that
+projects to roughly **475GB (median) to 1.0TB (mean)**, so "the full catalog"
+does not reliably fit on a 1TB volume. An earlier ~300KB/report estimate in
+these docs was measured on too small a sample and was low by ~3x.
+
+Re-measure as you go rather than trusting either number:
+
+```bash
+find "$GODEL_RESEARCH_DIR" -name '*.pdf' | wc -l && du -sh "$GODEL_RESEARCH_DIR"
+```
+
+`--min-free-gb` is the actual safety net: the run stops cleanly at the floor
+instead of filling the volume, and resumes later. If the whole corpus won't
+fit, narrow it rather than racing the disk -- the catalog carries `provider`,
+`date`, `region`, `sector` and `GICS`, so a filtered subset is usually the
+better target.
+
+### Throughput
+
+`research-backfill` downloads with `--workers` threads (default 8) and each
+thread reuses one keep-alive connection. Pacing is server-driven: a 429 or 503
+parks *every* worker for the `Retry-After` interval (exponential backoff if the
+header is absent) rather than each thread rediscovering the limit. `--delay`
+adds an optional extra pause per download and defaults to 0.
+
+```bash
+python3 -m server.cli research-backfill --workers 8      # measured 4.6 reports/sec
+python3 -m server.cli research-backfill --workers 2      # gentle
+python3 -m server.cli research-backfill --workers 16     # watch the log for 429s
+```
+
+8 workers measured 4.6 reports/sec against the live API with no 429s, which is
+~53 hours for the full catalog -- so this is a multi-day job you start in
+`nohup` and check on, not something that finishes overnight. Scaling is
+sub-linear (these are 1MB PDFs; bandwidth starts to bind before the API does).
+
+Raise workers only while watching the log. Sustained 429s mean the backoff is
+doing all the work and the extra threads are buying nothing; a 403 that doesn't
+clear usually means Cloudflare stopped believing the session, not that the
+token expired.
+
+Failed reports keep `downloaded=0` and record `download_error`, so a later run
+retries them. Reports that fail permanently will be retried on every full run
+-- find them with:
+
+```sql
+SELECT id, download_error FROM research_reports WHERE download_error IS NOT NULL;
+```
 
 ## ToS caveat
 

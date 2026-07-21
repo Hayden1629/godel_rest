@@ -1,7 +1,28 @@
 # Setup & transfer guide
 
-How to move the Gödel research toolkit to another Mac and get the Gödel chat
-streaming into OpenClaw (or any agent framework).
+How to move the Gödel research toolkit to another machine (macOS or Linux) and
+get the Gödel chat streaming into OpenClaw (or any agent framework).
+
+## Linux notes
+
+`./setup.sh` works on both platforms, but two things differ from macOS:
+
+- **A venv is mandatory, not optional.** Debian/Ubuntu/Mint 24.04+ and Fedora
+  ship PEP 668-marked Pythons that refuse `pip install` into the system
+  interpreter. `setup.sh` builds `.venv/` (using `uv` if present) and
+  `services.sh` prefers it automatically. Run commands as
+  `.venv/bin/python -m server.cli ...` or `source .venv/bin/activate` first.
+- **The extension loads the same way** in Chrome or Chromium
+  (`chrome://extensions` -> Developer mode -> Load unpacked). Snap-packaged
+  Chromium is confined and can be awkward about reaching `localhost`; if the
+  token never arrives, use the `.deb`/Flatpak build or Chrome proper.
+
+To keep the research PDF corpus on a separate large volume, export these before
+running any `research-*` command (see README "Research reports"):
+
+```bash
+export GODEL_RESEARCH_DIR=/media/$USER/<DRIVE>/godel_research/research_pdfs
+```
 
 ## 1. What to transfer
 

@@ -248,7 +248,8 @@ def cmd_research_status(args):
 
 def cmd_research_backfill(args):
     res = research.download_pending(limit=args.limit, delay=args.delay,
-                                     min_free_gb=args.min_free_gb)
+                                     min_free_gb=args.min_free_gb,
+                                     workers=args.workers)
     print(f"attempted {res['attempted']} ({res['ok']} ok, {res['failed']} failed)")
     if res["stopped_low_disk"]:
         print(f"stopped early: free disk space fell below {args.min_free_gb}GB. "
@@ -380,7 +381,10 @@ def main():
     rb = sub.add_parser("research-backfill",
                         help="download every not-yet-downloaded report's PDF (resumable)")
     rb.add_argument("--limit", type=int, default=None, help="cap this run (omit for all pending)")
-    rb.add_argument("--delay", type=float, default=0.5, help="seconds between downloads")
+    rb.add_argument("--workers", type=int, default=8,
+                     help="parallel downloads (default 8; back off if you see 429s)")
+    rb.add_argument("--delay", type=float, default=0.0,
+                     help="extra pause per download, on top of server-driven backoff")
     rb.add_argument("--min-free-gb", type=float, default=5.0, dest="min_free_gb",
                      help="stop once free disk space drops below this many GB")
     rb.set_defaults(func=cmd_research_backfill)

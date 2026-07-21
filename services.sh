@@ -14,6 +14,9 @@ set -euo pipefail
 cd "$(dirname "$0")"
 RUN=run
 mkdir -p "$RUN"
+# Prefer the venv setup.sh builds -- on distros with PEP 668 Pythons the deps
+# only exist there, and a bare `python3` would start a poller that can't import.
+if [ -z "${PY:-}" ] && [ -x .venv/bin/python ]; then PY=.venv/bin/python; fi
 PY=${PY:-python3}
 CHANNELS=${CHANNELS:-general,biotech,options,quant,paid}
 
