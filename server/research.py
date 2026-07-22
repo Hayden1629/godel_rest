@@ -15,9 +15,12 @@ from godel_rest.db) so the ~850k-row catalog and its `downloaded` flag can be
 tracked independently of the chat archive.
 """
 import json
+import os
 import shutil
 import sqlite3
+import threading
 import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 
 import requests
@@ -31,8 +34,17 @@ SUPABASE_APIKEY = "sb_publishable_p16tYte2BDxxrAHa2mDl2Q_KhWPesCe"
 FETCH_URL = "https://app.godelterminal.com/api/fetchResearch"
 PAGE_SIZE = 100
 
-PDF_DIR = Path(__file__).resolve().parent.parent / "output" / "research_pdfs"
-DB_PATH = Path(__file__).resolve().parent.parent / "research.db"
+_REPO = Path(__file__).resolve().parent.parent
+
+# Where the PDFs land. Overridable so the ~800k-file corpus can live on a big
+# external volume (e.g. GODEL_RESEARCH_DIR=/media/richard/GAMES/godel_research)
+# while the repo stays on the system disk.
+PDF_DIR = Path(os.environ.get("GODEL_RESEARCH_DIR")
+               or _REPO / "output" / "research_pdfs").expanduser()
+# The catalog DB deliberately defaults to the repo (a real local filesystem).
+# Keep it off NTFS/exFAT/network mounts -- SQLite's locking is unreliable on
+# FUSE-backed volumes, and this DB takes a write per completed download.
+DB_PATH = Path(os.environ.get("GODEL_RESEARCH_DB") or _REPO / "research.db").expanduser()
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS research_reports (
@@ -55,14 +67,31 @@ CREATE TABLE IF NOT EXISTS research_reports (
     download_error TEXT,
     inserted_at    TEXT
 );
+-- also serves iter_pending's keyset page (WHERE downloaded=0 AND id<? ORDER BY
+-- id DESC): `id` is INTEGER PRIMARY KEY, i.e. the rowid, so this index's
+-- entries are already ordered by it within each `downloaded` value and the
+-- range scan comes free. A separate (downloaded, id) index adds nothing.
 CREATE INDEX IF NOT EXISTS idx_research_downloaded ON research_reports(downloaded);
 CREATE INDEX IF NOT EXISTS idx_research_date ON research_reports(date);
 CREATE INDEX IF NOT EXISTS idx_research_provider ON research_reports(provider);
 """
 
 
+BUSY_TIMEOUT_MS = 30_000
+
+
 def connect() -> sqlite3.Connection:
     conn = sqlite3.connect(str(DB_PATH))
+    # WAL lets the backfill's streaming reader (iter_pending) run without
+    # blocking against the writer; NORMAL sync is the right trade here since a
+    # lost final commit only means re-downloading a few reports we can re-fetch.
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    # SQLite still allows only one writer at a time. Without a busy timeout,
+    # a second writer (a `research-sync` run refreshing the catalog while a
+    # backfill is going) fails instantly with "database is locked" instead of
+    # waiting out the other transaction, which is measured in milliseconds.
+    conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
     conn.executescript(SCHEMA)
     return conn
 
@@ -211,106 +240,295 @@ def iter_all(page_size: int = PAGE_SIZE, delay: float = 0.2):
             time.sleep(delay)
 
 
-def fetch_pdf(report_id: int) -> bytes:
-    """Download one report's PDF bytes."""
-    token = token_store.load_token()
-    headers = {
+# --- request pacing -------------------------------------------------------
+# Downloads run concurrently, so the server's own signals -- not a fixed sleep
+# -- are what keep us in bounds. A 429/503 from any worker parks *every* worker
+# until `_resume_at`, so the pool backs off as one instead of each thread
+# discovering the limit separately.
+_throttle_lock = threading.Lock()
+_resume_at = 0.0
+_local = threading.local()
+
+
+def _session() -> requests.Session:
+    """One Session per worker thread: keep-alive means we pay the TLS handshake
+    once per thread instead of once per report, which is a large share of the
+    per-request cost at these volumes."""
+    s = getattr(_local, "session", None)
+    if s is None:
+        s = requests.Session()
+        _local.session = s
+    return s
+
+
+def _await_throttle() -> None:
+    while True:
+        with _throttle_lock:
+            wait = _resume_at - time.monotonic()
+        if wait <= 0:
+            return
+        time.sleep(min(wait, 5.0))
+
+
+def _throttle(seconds: float) -> None:
+    global _resume_at
+    with _throttle_lock:
+        _resume_at = max(_resume_at, time.monotonic() + seconds)
+
+
+def _headers(token: str) -> dict:
+    return {
         "Content-Type": "text/plain;charset=UTF-8",
         "Origin": "https://app.godelterminal.com",
         "Referer": "https://app.godelterminal.com/",
         "Cookie": f"__sessionv2={token}",
         # Cloudflare fronts app.godelterminal.com (unlike api.) and blocks
         # requests with no User-Agent as a 403, even with a valid session cookie.
-        "User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:148.0) "
+        "User-Agent": ("Mozilla/5.0 (X11; Linux x86_64; rv:148.0) "
                         "Gecko/20100101 Firefox/148.0"),
     }
-    t0 = time.time()
-    resp = requests.post(FETCH_URL, headers=headers, json={"id": report_id}, timeout=60)
-    ms = (time.time() - t0) * 1000
-    record("POST", "/api/fetchResearch", {"id": report_id}, resp.status_code, ms,
-           host="godel-research")
-    resp.raise_for_status()
-    ctype = resp.headers.get("content-type", "")
-    if "pdf" not in ctype.lower():
-        raise ValueError(f"expected a PDF, got content-type={ctype!r} "
-                          f"(id={report_id}, {len(resp.content)} bytes)")
-    return resp.content
+
+
+def fetch_pdf(report_id: int, retries: int = 4) -> bytes:
+    """Download one report's PDF bytes, retrying through rate limits.
+
+    A 429 or 5xx is retried with exponential backoff (honouring `Retry-After`
+    when the server sends one) rather than burning the report as a permanent
+    error -- at 800k downloads, transient failures are certain."""
+    last_exc: Exception | None = None
+    for attempt in range(retries):
+        _await_throttle()
+        token = token_store.load_token()
+        t0 = time.time()
+        try:
+            resp = _session().post(FETCH_URL, headers=_headers(token),
+                                   json={"id": report_id}, timeout=60)
+        except requests.RequestException as e:
+            last_exc = e
+            record("POST", "/api/fetchResearch", {"id": report_id}, "ERR",
+                   (time.time() - t0) * 1000, host="godel-research")
+            time.sleep(2 ** attempt)
+            continue
+        ms = (time.time() - t0) * 1000
+        record("POST", "/api/fetchResearch", {"id": report_id}, resp.status_code, ms,
+               host="godel-research")
+
+        if resp.status_code in (429, 503):
+            ra = resp.headers.get("Retry-After")
+            delay = float(ra) if ra and ra.replace(".", "", 1).isdigit() else 2 ** (attempt + 2)
+            logger.warning("rate limited (HTTP {}), pausing all workers {:.0f}s",
+                           resp.status_code, delay)
+            _throttle(delay)
+            last_exc = RuntimeError(f"HTTP {resp.status_code} rate limited")
+            continue
+        if resp.status_code >= 500:
+            last_exc = RuntimeError(f"HTTP {resp.status_code} from fetchResearch")
+            time.sleep(2 ** attempt)
+            continue
+
+        resp.raise_for_status()
+        ctype = resp.headers.get("content-type", "")
+        if "pdf" not in ctype.lower():
+            raise ValueError(f"expected a PDF, got content-type={ctype!r} "
+                              f"(id={report_id}, {len(resp.content)} bytes)")
+        return resp.content
+    raise last_exc or RuntimeError(f"failed after {retries} attempts (id={report_id})")
 
 
 def _safe_name(row: dict) -> str:
     title = (row.get("title") or "untitled").strip()
     title = "".join(c if c.isalnum() or c in " -_" else "_" for c in title)[:80]
+    # NTFS rejects names whose final character is a space or a dot, which a
+    # truncated title can easily produce -- strip before appending the suffix.
+    title = title.rstrip(" .") or "untitled"
     return f"{row['id']}_{title}.pdf"
 
 
-def _shard_dir(row: dict, base: Path = PDF_DIR) -> Path:
-    # 851k files in one flat dir is rough on Finder/Spotlight; shard by year.
-    year = (row.get("date") or "unknown")[:4]
-    return base / year
+def _shard_dir(row: dict, base: Path | None = None) -> Path:
+    # The catalog spans 1982-2026 and recent years hold 50k+ reports each, so
+    # year-only shards still produce directories big enough to make listing
+    # them painful (especially over NTFS/FUSE). Shard by year/month instead --
+    # ~4-8k files per directory. Lookups go through research.db.pdf_path
+    # anyway, so the layout only has to be pleasant to browse.
+    base = base if base is not None else PDF_DIR
+    date = row.get("date") or ""
+    year, month = (date[:4] or "unknown"), (date[5:7] or "00")
+    if not year.isdigit():
+        return base / "unknown"
+    return base / year / month
 
 
-def download_one(row: dict, out_dir: Path | None = None) -> Path:
+def download_one(row: dict, out_dir: Path | None = None, skip_existing: bool = True) -> Path:
     out_dir = out_dir or _shard_dir(row)
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / _safe_name(row)
+    # A run killed mid-flight (or a DB restored from an older copy) can leave
+    # files on disk the catalog doesn't know about -- don't re-pay for them.
+    if skip_existing and path.exists() and path.stat().st_size > 0:
+        return path
     pdf_bytes = fetch_pdf(row["id"])
-    path.write_bytes(pdf_bytes)
-    logger.info("saved {} ({} bytes)", path.name, len(pdf_bytes))
+    # Write to a temp name and rename: a kill -9 mid-write then leaves no
+    # zero-length file that skip_existing would later mistake for a real one.
+    tmp = path.with_suffix(".pdf.part")
+    tmp.write_bytes(pdf_bytes)
+    tmp.replace(path)
+    logger.debug("saved {} ({} bytes)", path.name, len(pdf_bytes))
     return path
 
 
-def pending_ids(conn: sqlite3.Connection, limit: int | None = None) -> list[dict]:
-    q = "SELECT * FROM research_reports WHERE downloaded = 0 ORDER BY date DESC, id DESC"
-    if limit:
-        q += f" LIMIT {int(limit)}"
-    cols = [d[0] for d in conn.execute(q).description]
-    return [dict(zip(cols, row)) for row in conn.execute(q).fetchall()]
+def iter_pending(limit: int | None = None, chunk: int = 2000):
+    """Stream pending rows, one short-lived read transaction per chunk.
+
+    `SELECT *` over ~880k pending rows would materialize about a gigabyte of
+    dicts, so this pages. It pages by *keyset* rather than holding one cursor
+    open, because a cursor left open for a 50-hour backfill is a read
+    transaction left open for 50 hours -- and in WAL mode nothing can
+    checkpoint past the oldest live reader, so the -wal file would grow to
+    hold every write of the entire run. Opening and closing per chunk keeps
+    the WAL recycling normally.
+
+    Paging descends by id (not date, which is nullable and would silently
+    strand rows in a row-value comparison). ids are assigned in ingest order,
+    so this is still approximately newest-first, and rows the backfill marks
+    downloaded simply drop out of later pages."""
+    yielded = 0
+    after: int | None = None
+    while True:
+        read = sqlite3.connect(str(DB_PATH))
+        read.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+        try:
+            if after is None:
+                cur = read.execute(
+                    "SELECT * FROM research_reports WHERE downloaded = 0 "
+                    "ORDER BY id DESC LIMIT ?", (chunk,))
+            else:
+                cur = read.execute(
+                    "SELECT * FROM research_reports WHERE downloaded = 0 "
+                    "AND id < ? ORDER BY id DESC LIMIT ?", (after, chunk))
+            cols = [d[0] for d in cur.description]
+            batch = cur.fetchall()
+        finally:
+            read.close()
+        if not batch:
+            return
+        for row in batch:
+            d = dict(zip(cols, row))
+            after = d["id"]
+            yield d
+            yielded += 1
+            if limit and yielded >= limit:
+                return
 
 
-def download_pending(limit: int | None = None, delay: float = 0.5,
-                      min_free_gb: float = 5.0) -> dict:
+def pending_count(conn: sqlite3.Connection) -> int:
+    return conn.execute(
+        "SELECT COUNT(*) FROM research_reports WHERE downloaded = 0").fetchone()[0]
+
+
+def _free_gb() -> float:
+    """Free space on the volume PDF_DIR lives on. Walks up to the nearest
+    existing ancestor so this works before the target tree has been created."""
+    p = PDF_DIR
+    while not p.exists() and p != p.parent:
+        p = p.parent
+    return shutil.disk_usage(p).free / 1e9
+
+
+def download_pending(limit: int | None = None, delay: float = 0.0,
+                      min_free_gb: float = 5.0, workers: int = 8) -> dict:
     """Download every not-yet-downloaded report (resumable: already-downloaded
     rows are skipped on the next call since they're filtered by the
     `downloaded` flag). Stops itself -- instead of crashing mid-write -- once
     free disk space on PDF_DIR's volume drops below `min_free_gb`, so it never
-    fills the disk out from under the live chat poller / godel_rest.db."""
+    fills the disk out from under the live chat poller / godel_rest.db.
+
+    `workers` threads fetch in parallel while this thread owns every DB write,
+    which keeps SQLite single-writer. Throughput is governed by the server's
+    429s (see `_throttle`) rather than a fixed per-request `delay`; `delay` is
+    kept as an optional extra pause per download for deliberate gentleness."""
     conn = connect()
-    ok, failed = 0, 0
+    ok, failed, done = 0, 0, 0
     stopped_low_disk = False
+    started = time.time()
     try:
-        rows = pending_ids(conn, limit)
-        n = len(rows)
-        for i, row in enumerate(rows, 1):
-            free_gb = shutil.disk_usage(PDF_DIR.parent).free / 1e9
-            if free_gb < min_free_gb:
-                logger.warning("stopping: only {:.1f}GB free (< {}GB floor). "
-                                "{}/{} attempted this run -- resume later, "
-                                "already-downloaded rows are skipped.",
-                                free_gb, min_free_gb, i - 1, n)
-                stopped_low_disk = True
-                break
+        n = pending_count(conn)
+        if limit:
+            n = min(n, limit)
+        rows = iter_pending(limit)
+        logger.info("research backfill: {} pending, {} workers, {:.0f}GB free at {}",
+                    n, workers, _free_gb(), PDF_DIR)
+
+        def work(row: dict):
+            """Never raises: the row travels with its own outcome so the
+            committer always knows which report to mark."""
+            if delay:
+                time.sleep(delay)
             try:
-                path = download_one(row)
-                conn.execute(
-                    "UPDATE research_reports SET downloaded=1, downloaded_at=?, "
-                    "pdf_path=?, download_error=NULL WHERE id=?",
-                    (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                     str(path), row["id"]),
-                )
-                ok += 1
+                return row, download_one(row), None
             except Exception as e:
-                logger.warning("failed id={}: {}", row["id"], e)
-                conn.execute(
-                    "UPDATE research_reports SET download_error=? WHERE id=?",
-                    (str(e), row["id"]),
-                )
-                failed += 1
-            conn.commit()
-            if i % 50 == 0:
-                logger.info("research backfill: {}/{} ({} ok, {} failed)",
-                            i, n, ok, failed)
-            time.sleep(delay)
+                return row, None, e
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            # Keep only ~2x workers in flight: submitting all 800k futures up
+            # front would hold the whole catalog in memory and make the
+            # low-disk check unable to stop anything already queued.
+            futures = set()
+            for row in rows:
+                futures.add(pool.submit(work, row))
+                if len(futures) < workers * 2:
+                    continue
+                done_set, futures = _drain(futures)
+                o, f = _commit(conn, done_set)
+                ok, failed, done = ok + o, failed + f, done + o + f
+                # statvfs on a FUSE mount isn't free, and this loop runs ~880k
+                # times -- one reading per cycle, shared by the log and the guard.
+                free = _free_gb()
+                if done % 200 < len(done_set):
+                    rate = done / max(time.time() - started, 1)
+                    logger.info("research backfill: {}/{} ({} ok, {} failed) "
+                                "{:.1f}/s, {:.0f}GB free", done, n, ok, failed,
+                                rate, free)
+                if free < min_free_gb:
+                    logger.warning("stopping: only {:.1f}GB free (< {}GB floor). "
+                                    "{}/{} done this run -- resume later, "
+                                    "already-downloaded rows are skipped.",
+                                    free, min_free_gb, done, n)
+                    stopped_low_disk = True
+                    break
+            # drain whatever is still in flight
+            for fut in futures:
+                o, f = _commit(conn, [fut])
+                ok, failed, done = ok + o, failed + f, done + o + f
     finally:
         conn.close()
     return {"attempted": ok + failed, "ok": ok, "failed": failed,
             "stopped_low_disk": stopped_low_disk}
+
+
+def _drain(futures: set):
+    """Block until at least one future finishes; return (finished, still_running)."""
+    finished, pending = wait(futures, return_when=FIRST_COMPLETED)
+    return list(finished), set(pending)
+
+
+def _commit(conn: sqlite3.Connection, futures) -> tuple[int, int]:
+    """Record finished downloads. Runs on the main thread only -- SQLite stays
+    single-writer, so no `database is locked` under concurrency."""
+    ok = failed = 0
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    for fut in futures:
+        row, path, err = fut.result()
+        if err is None:
+            conn.execute(
+                "UPDATE research_reports SET downloaded=1, downloaded_at=?, "
+                "pdf_path=?, download_error=NULL WHERE id=?",
+                (now, str(path), row["id"]),
+            )
+            ok += 1
+        else:
+            logger.warning("failed id={}: {}", row["id"], err)
+            conn.execute("UPDATE research_reports SET download_error=? WHERE id=?",
+                         (str(err), row["id"]))
+            failed += 1
+    conn.commit()
+    return ok, failed

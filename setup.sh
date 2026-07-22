@@ -9,6 +9,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 PY=${PY:-python3}
+VENV=${VENV:-.venv}
 
 echo "== Gödel research toolkit setup =="
 
@@ -19,11 +20,26 @@ if ! command -v "$PY" >/dev/null; then
 fi
 echo "✓ $("$PY" --version)"
 
-# 2. Dependencies
+# 2. Dependencies, into a venv.
+# Most Linux distros (Debian/Ubuntu/Mint 24.04+, Fedora) ship PEP 668-marked
+# Pythons where a bare `pip install` into the system interpreter is refused
+# outright -- so always build a venv rather than assuming macOS's more
+# permissive default.
 echo "Installing Python dependencies…"
-"$PY" -m pip install -q --upgrade pip >/dev/null 2>&1 || true
-"$PY" -m pip install -q -r requirements.txt
-echo "✓ dependencies installed"
+if [ ! -d "$VENV" ]; then
+  if command -v uv >/dev/null; then uv venv "$VENV"
+  else "$PY" -m venv "$VENV"; fi
+fi
+VPY="$VENV/bin/python"
+[ -x "$VPY" ] || VPY="$VENV/Scripts/python.exe"   # git-bash on Windows
+if command -v uv >/dev/null; then
+  VIRTUAL_ENV="$VENV" uv pip install -q -r requirements.txt
+else
+  "$VPY" -m pip install -q --upgrade pip >/dev/null 2>&1 || true
+  "$VPY" -m pip install -q -r requirements.txt
+fi
+echo "✓ dependencies installed into $VENV"
+PY="$VPY"
 
 # 3. Token directory
 mkdir -p "$HOME/.godel_rest"
@@ -43,8 +59,9 @@ echo "== Health check =="
 "$PY" -m doctor || true
 
 echo
-cat <<'EOF'
+cat <<EOF
 Next steps (see SETUP.md for detail):
+  0. Activate the venv:          source $VENV/bin/activate
   1. Load the Chrome extension:  chrome://extensions -> Load unpacked -> godel_rest/extension
   2. Start streaming:            ./services.sh start   (then log into app.godelterminal.com)
   3. Schwab (optional):          python3 -m broker.setup_auth

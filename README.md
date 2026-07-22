@@ -313,10 +313,74 @@ python3 -m server.cli research-backfill --limit 20
 python3 -m server.cli research-backfill --min-free-gb 10   # bigger safety floor
 ```
 
-PDFs land under `output/research_pdfs/<year>/` (sharded by report year -- one
-flat directory with hundreds of thousands of files is rough on Finder/Spotlight).
-At ~300KB/report, downloading the full catalog is on the order of 250GB+ --
-check free space before running an unbounded backfill.
+### Where it writes
+
+PDFs land under `<PDF_DIR>/<year>/<month>/`. The catalog spans 1982-2026 and
+recent years hold 50k+ reports each, so month shards keep directories to a few
+thousand files; look reports up via `research.db`'s `pdf_path`, not by browsing.
+
+Both paths are environment-overridable, so the corpus can live on a big
+external volume while the repo stays on the system disk:
+
+```bash
+export GODEL_RESEARCH_DIR=/media/<you>/<DRIVE>/godel_research/research_pdfs
+export GODEL_RESEARCH_DB=/path/to/repo/research.db   # default: repo root
+```
+
+Keep `research.db` on a real local filesystem. SQLite locking is unreliable on
+NTFS/exFAT/network mounts, and the backfill writes a row per completed
+download -- the PDFs are fine out there, the database is not.
+
+**Sizing.** A 32-report sample spread across the catalog measured mean 1.1MB /
+median 528KB per PDF -- the distribution is heavily right-skewed (a 4MB
+strategy deck against a 200KB one-page note). Against 878,686 reports that
+projects to roughly **475GB (median) to 1.0TB (mean)**, so "the full catalog"
+does not reliably fit on a 1TB volume. An earlier ~300KB/report estimate in
+these docs was measured on too small a sample and was low by ~3x.
+
+Re-measure as you go rather than trusting either number:
+
+```bash
+find "$GODEL_RESEARCH_DIR" -name '*.pdf' | wc -l && du -sh "$GODEL_RESEARCH_DIR"
+```
+
+`--min-free-gb` is the actual safety net: the run stops cleanly at the floor
+instead of filling the volume, and resumes later. If the whole corpus won't
+fit, narrow it rather than racing the disk -- the catalog carries `provider`,
+`date`, `region`, `sector` and `GICS`, so a filtered subset is usually the
+better target.
+
+### Throughput
+
+`research-backfill` downloads with `--workers` threads (default 8) and each
+thread reuses one keep-alive connection. Pacing is server-driven: a 429 or 503
+parks *every* worker for the `Retry-After` interval (exponential backoff if the
+header is absent) rather than each thread rediscovering the limit. `--delay`
+adds an optional extra pause per download and defaults to 0.
+
+```bash
+python3 -m server.cli research-backfill --workers 8      # measured 4.6 reports/sec
+python3 -m server.cli research-backfill --workers 2      # gentle
+python3 -m server.cli research-backfill --workers 16     # watch the log for 429s
+```
+
+8 workers measured 4.6 reports/sec against the live API with no 429s, which is
+~53 hours for the full catalog -- so this is a multi-day job you start in
+`nohup` and check on, not something that finishes overnight. Scaling is
+sub-linear (these are 1MB PDFs; bandwidth starts to bind before the API does).
+
+Raise workers only while watching the log. Sustained 429s mean the backoff is
+doing all the work and the extra threads are buying nothing; a 403 that doesn't
+clear usually means Cloudflare stopped believing the session, not that the
+token expired.
+
+Failed reports keep `downloaded=0` and record `download_error`, so a later run
+retries them. Reports that fail permanently will be retried on every full run
+-- find them with:
+
+```sql
+SELECT id, download_error FROM research_reports WHERE download_error IS NOT NULL;
+```
 
 ## ToS caveat
 

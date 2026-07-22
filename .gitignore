@@ -12,6 +12,8 @@ token.json
 # output/ = generated charts, CSV/JSON exports, thesis HTML; xlsx = FA exports
 godel_rest.db
 *.db
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
 output/
