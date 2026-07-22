@@ -139,6 +139,34 @@ def counts() -> dict:
         conn.close()
 
 
+def _get_with_retry(headers: dict, params: dict, ctx: dict,
+                    retries: int = 5, backoff: float = 2.0) -> requests.Response:
+    """GET with retry on transient network errors (dropped SSL reads, timeouts,
+    5xx). Backs off exponentially. Raises the last error if all attempts fail."""
+    last_exc = None
+    for attempt in range(retries):
+        t0 = time.time()
+        try:
+            resp = requests.get(SUPABASE_BASE, headers=headers, params=params,
+                                timeout=30)
+            ms = (time.time() - t0) * 1000
+            record("GET", "/rest/v1/research_report", ctx, resp.status_code, ms,
+                   host="godel-research")
+            if resp.status_code >= 500:
+                raise requests.HTTPError(f"server {resp.status_code}", response=resp)
+            resp.raise_for_status()
+            return resp
+        except (requests.RequestException, ConnectionError) as e:
+            last_exc = e
+            if attempt == retries - 1:
+                break
+            wait = backoff * (2 ** attempt)
+            logger.warning("request failed ({}); retry {}/{} in {:.0f}s",
+                           e, attempt + 1, retries - 1, wait)
+            time.sleep(wait)
+    raise last_exc
+
+
 def list_page(offset: int = 0, limit: int = PAGE_SIZE) -> tuple[list[dict], int]:
     """One page of report metadata (no login needed). Returns (rows, total_count)."""
     headers = {
@@ -147,12 +175,7 @@ def list_page(offset: int = 0, limit: int = PAGE_SIZE) -> tuple[list[dict], int]
         "Range": f"{offset}-{offset + limit - 1}",
     }
     params = {"select": "*", "order": "date.desc,id.desc"}
-    t0 = time.time()
-    resp = requests.get(SUPABASE_BASE, headers=headers, params=params, timeout=30)
-    ms = (time.time() - t0) * 1000
-    record("GET", "/rest/v1/research_report", {"range": headers["Range"]},
-           resp.status_code, ms, host="godel-research")
-    resp.raise_for_status()
+    resp = _get_with_retry(headers, params, {"range": headers["Range"]})
     total = 0
     cr = resp.headers.get("content-range", "")  # "0-99/851762"
     if "/" in cr:

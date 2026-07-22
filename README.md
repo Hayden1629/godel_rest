@@ -74,8 +74,7 @@ News options: `--important --interval 30`.
 ### Channels
 
 63 channels total. The valuable community rooms are `type=user_write`:
-`general, biotech, options, sellside, buyside, quant, smallcaps, crypto, fx,
-bonds, energy, politics, …` plus `paid` (`user_only`) and `pikers`
+`general, biotech, options, sellside, buyside, quant, smallcaps, crypto, fx, bonds, energy, politics, …` plus `paid` (`user_only`) and `pikers`
 (`public_write`). `symbol` channels are per-ticker rooms; `dm` are private.
 Run `channels` for the full id/title map.
 
@@ -116,17 +115,17 @@ SQLite at `godel_rest/godel_rest.db`:
 
 ## Status / next
 
-- [x] Extension token relay (MAIN-world hook) + local receiver + SQLite sink.
-- [x] **Task 1 confirmed** — `verify` returns 200 server-side, no Cloudflare.
-- [x] Chat poller (multi-channel, dedup, ticker tagging). Tested on 4 channels.
-- [x] Channel enumeration via `/api/chat/channels` (63 channels mapped).
-- [x] News poller — `/api/v1/top-news-items` (`?important=true` supported).
-- [x] Trending — `/api/v1/trending?timeframe=24H` (ranked by mentions).
-- [x] Endpoint discovery logger in the extension.
+- [X] Extension token relay (MAIN-world hook) + local receiver + SQLite sink.
+- [X] **Task 1 confirmed** — `verify` returns 200 server-side, no Cloudflare.
+- [X] Chat poller (multi-channel, dedup, ticker tagging). Tested on 4 channels.
+- [X] Channel enumeration via `/api/chat/channels` (63 channels mapped).
+- [X] News poller — `/api/v1/top-news-items` (`?important=true` supported).
+- [X] Trending — `/api/v1/trending?timeframe=24H` (ranked by mentions).
+- [X] Endpoint discovery logger in the extension.
 - [ ] Breaking news — old `/api/fetchBreaking` is 404. Find the replacement via
-      `discover` (open the News/breaking window in the app).
+  `discover` (open the News/breaking window in the app).
 - [ ] Cursor param for history backfill (response gives `prevCursor`; test
-      `?cursor=`/`?before=`/`?prevCursor=` via `raw`).
+  `?cursor=`/`?before=`/`?prevCursor=` via `raw`).
 - [ ] Confirm `createdAt` is UTC.
 - [ ] More text commands (DES/FA/ANR/etc.) once their endpoints are discovered.
 
@@ -238,15 +237,14 @@ historical FCF growth, and saves charts + statement files under `output/`.
 **How EV + FCF are sourced (no Gödel "DES" — that command is a dead DOM
 scraper):**
 
-| input | source |
-|-------|--------|
-| 3 statements | Gödel `GET /api/v1/consolidated_financials/{income_statement\|balance_sheet\|cash_flow}/{series_id}/{QTR\|ANN}` |
-| share price (last close) | Gödel `GET /api/v1/search?query=TICKER` |
-| shares outstanding, name, summary | Massive `GET /v3/reference/tickers/{T}` |
-| price history → beta / YTD / vol | Massive `GET /v2/aggs/...` (ticker + SPY) |
+| input                             | source                                                                                                         |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| 3 statements                      | Gödel`GET /api/v1/consolidated_financials/{income_statement\|balance_sheet\|cash_flow}/{series_id}/{QTR\|ANN}` |
+| share price (last close)          | Gödel`GET /api/v1/search?query=TICKER`                                                                      |
+| shares outstanding, name, summary | Massive`GET /v3/reference/tickers/{T}`                                                                       |
+| price history → beta / YTD / vol | Massive`GET /v2/aggs/...` (ticker + SPY)                                                                     |
 
-`EV = price×shares + net debt` (debt − cash from the balance sheet). `FCF =
-operating cash flow − capex`. The reverse DCF bisects for the constant FCF
+`EV = price×shares + net debt` (debt − cash from the balance sheet). `FCF = operating cash flow − capex`. The reverse DCF bisects for the constant FCF
 growth that makes the discounted TTM-FCF stream equal EV, then compares it to
 the historical FCF CAGR.
 
