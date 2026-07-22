@@ -331,12 +331,26 @@ Keep `research.db` on a real local filesystem. SQLite locking is unreliable on
 NTFS/exFAT/network mounts, and the backfill writes a row per completed
 download -- the PDFs are fine out there, the database is not.
 
-**Sizing.** A 32-report sample spread across the catalog measured mean 1.1MB /
-median 528KB per PDF -- the distribution is heavily right-skewed (a 4MB
-strategy deck against a 200KB one-page note). Against 878,686 reports that
-projects to roughly **475GB (median) to 1.0TB (mean)**, so "the full catalog"
-does not reliably fit on a 1TB volume. An earlier ~300KB/report estimate in
-these docs was measured on too small a sample and was low by ~3x.
+**Sizing.** Per-PDF size is heavily right-skewed (a 4MB strategy deck against a
+200KB one-page note), so means converge slowly and small samples mislead. Three
+measurements, and the trap between them:
+
+| sample | mean/report | implied total (878,686) |
+|--------|-------------|-------------------------|
+| 200k reports, prior full run | ~1.0MB | ~900GB |
+| 3,981 reports, 2026 only | 1.4MB | ~1.25TB |
+| 32 reports, spread 1982-2026 | 1.1MB | ~1.0TB |
+
+The backfill runs newest-first and **395,046 reports (45% of the catalog) are
+dated 2026**, so any sample taken early is a 2026 sample, not a catalog sample.
+Older reports appear to be smaller, which means an early sample *overestimates*
+the total. Trust the large prior run (~900GB) over an early-run average, and
+re-measure once the run is past 2026.
+
+Budget somewhere around 0.9-1.1TB for the full catalog, and treat anything
+measured in the first few tens of thousands of files as an upper bound. (An
+earlier ~300KB/report note in these docs was simply wrong -- too small a
+sample, low by 3-4x.)
 
 Re-measure as you go rather than trusting either number:
 
@@ -359,15 +373,42 @@ header is absent) rather than each thread rediscovering the limit. `--delay`
 adds an optional extra pause per download and defaults to 0.
 
 ```bash
-python3 -m server.cli research-backfill --workers 8      # measured 4.6 reports/sec
+python3 -m server.cli research-backfill --workers 8
 python3 -m server.cli research-backfill --workers 2      # gentle
-python3 -m server.cli research-backfill --workers 16     # watch the log for 429s
 ```
 
-8 workers measured 4.6 reports/sec against the live API with no 429s, which is
-~53 hours for the full catalog -- so this is a multi-day job you start in
-`nohup` and check on, not something that finishes overnight. Scaling is
-sub-linear (these are 1MB PDFs; bandwidth starts to bind before the API does).
+**The download ceiling is server-side, not local.** Measured against the live
+API, throughput plateaus around 7 reports/sec no matter how many threads you
+point at it:
+
+| workers | 1 | 4 | 8 | 16 | 32 | 48 |
+|---------|---|---|---|----|----|----|
+| req/s   | 3.5 | 6.7 | 6.6 | 8.6 | 6.0 | 9.2 |
+| non-200 | 0 | 0 | 0 | 0 | 0 | **14** |
+
+Why it doesn't scale: ~68% of each request is time-to-first-byte (median 0.30s
+of a 0.44s request) -- the server generating the PDF. Nothing local is
+constrained. Local disk does 529 files/s and 147MB/s (vs the ~7/s and ~6MB/s
+actually used), CPU sits near idle, and this is I/O-bound work, so **core count
+is irrelevant** -- threads here are waiting on the network, not computing.
+Past ~16 workers you gain nothing and start drawing errors.
+
+So a full 878k sweep is ~35 hours. The effective lever is downloading less,
+not downloading harder -- see the sizing note above.
+
+### Metadata sync
+
+`research-sync` is a different story: it's a plain indexed query, so it does
+parallelize. Two things make it ~12x faster than a naive sweep:
+
+- `PAGE_SIZE = 1000`. PostgREST caps a response at 1000 rows and silently
+  returns 1000 no matter how much more you ask for, so 1000 is the largest
+  useful page -- 879 requests for the catalog instead of 8,787 at 100/page.
+- `--workers` parallel page fetches. 4 saturates it (~20k rows/s); more adds
+  nothing.
+
+A full 878,686-row sync measured **3m23s** end to end, at 4% CPU. The
+remaining time is mostly the SQLite upsert side, not the network.
 
 Raise workers only while watching the log. Sustained 429s mean the backoff is
 doing all the work and the extra threads are buying nothing; a 403 that doesn't

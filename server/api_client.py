@@ -76,10 +76,13 @@ def record(method: str, path: str, params: dict | None,
     entry = {"ts": time.strftime("%H:%M:%S"), "host": host, "method": method,
              "path": path, "params": safe, "status": status, "ms": round(ms, 1)}
     _CALLS.append(entry)
-    level = "INFO" if str(status) == "200" else "WARNING"
+    # Any 2xx is a success. Ranged listing calls answer 206, and flagging those
+    # as warnings marked every single catalog request with a ⚠, which hides the
+    # ones that actually matter.
+    ok = isinstance(status, int) and 200 <= status < 300
+    level = "INFO" if ok else "WARNING"
     _log.log(level, "{} {} {} {} -> {} ({} ms){}", host, method, path,
-             safe or "", status, round(ms, 1),
-             "" if str(status) == "200" else " ⚠")
+             safe or "", status, round(ms, 1), "" if ok else " ⚠")
 
 
 def _record(method: str, path: str, params: dict | None,

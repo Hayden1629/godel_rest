@@ -32,7 +32,10 @@ from .api_client import record
 SUPABASE_BASE = "https://ajyrhjlbiyqtzxiubwhl.supabase.co/rest/v1/research_report"
 SUPABASE_APIKEY = "sb_publishable_p16tYte2BDxxrAHa2mDl2Q_KhWPesCe"
 FETCH_URL = "https://app.godelterminal.com/api/fetchResearch"
-PAGE_SIZE = 100
+# PostgREST caps responses at 1000 rows (asking for more still returns 1000),
+# so 1000 is the largest useful page and cuts a full catalog sweep from 8,787
+# requests to 879.
+PAGE_SIZE = 1000
 
 _REPO = Path(__file__).resolve().parent.parent
 
@@ -130,28 +133,49 @@ def upsert_metadata(conn: sqlite3.Connection, rows: list[dict]) -> None:
     conn.commit()
 
 
-def sync_metadata(delay: float = 0.15, page_size: int = PAGE_SIZE) -> int:
+def sync_metadata(delay: float = 0.0, page_size: int = PAGE_SIZE,
+                   workers: int = 4) -> int:
     """Walk the full catalog and upsert metadata for every report. Cheap (JSON
-    only, no PDFs) -- safe to re-run to pick up newly published reports."""
+    only, no PDFs) -- safe to re-run to pick up newly published reports.
+
+    Pages are independent, so they're fetched concurrently. Unlike the PDF
+    endpoint (which plateaus around 7 req/s because the server is generating
+    documents), this is a plain indexed query and scales cleanly to ~20k
+    rows/s at 4 workers -- a full sweep is about a minute.
+
+    Upserts happen on this thread so SQLite stays single-writer. Offsets are
+    read concurrently against a table that may be taking inserts, so a row can
+    shift pages and be missed; upserts are idempotent and re-running is cheap,
+    which is the intended remedy (the old sequential version had this same
+    property)."""
     conn = connect()
     n = 0
     try:
-        offset = 0
-        total = None
-        while total is None or offset < total:
-            rows, total = list_page(offset, page_size)
-            if not rows:
-                break
-            upsert_metadata(conn, rows)
-            n += len(rows)
-            offset += len(rows)
-            if n % 5000 < page_size:
-                logger.info("research metadata sync: {}/{}", n, total)
-            if offset < total:
-                time.sleep(delay)
+        _, total = list_page(0, 1)
+        offsets = list(range(0, total, page_size))
+        logger.info("research metadata sync: {} rows in {} pages, {} workers",
+                    total, len(offsets), workers)
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            # Bounded batches rather than one big pool.map: mapping all 879
+            # pages at once buffers every result in memory if the writer lags.
+            for i in range(0, len(offsets), workers * 2):
+                group = offsets[i:i + workers * 2]
+                for rows in pool.map(lambda o: _fetch_page(o, page_size, delay), group):
+                    if rows:
+                        upsert_metadata(conn, rows)
+                        n += len(rows)
+                if n % 50_000 < page_size * workers * 2:
+                    logger.info("research metadata sync: {}/{}", n, total)
     finally:
         conn.close()
     return n
+
+
+def _fetch_page(offset: int, page_size: int, delay: float = 0.0) -> list[dict]:
+    if delay:
+        time.sleep(delay)
+    rows, _ = list_page(offset, page_size)
+    return rows
 
 
 def counts() -> dict:
@@ -168,6 +192,7 @@ def counts() -> dict:
         conn.close()
 
 
+<<<<<<< Updated upstream
 def _get_with_retry(headers: dict, params: dict, ctx: dict,
                     retries: int = 5, backoff: float = 2.0) -> requests.Response:
     """GET with retry on transient network errors (dropped SSL reads, timeouts,
@@ -198,18 +223,61 @@ def _get_with_retry(headers: dict, params: dict, ctx: dict,
 
 def list_page(offset: int = 0, limit: int = PAGE_SIZE) -> tuple[list[dict], int]:
     """One page of report metadata (no login needed). Returns (rows, total_count)."""
+=======
+def list_page(offset: int = 0, limit: int = PAGE_SIZE,
+              retries: int = 5) -> tuple[list[dict], int]:
+    """One page of report metadata (no login needed). Returns (rows, total_count).
+
+    Retries transient failures. A full sweep is ~879 requests and a single
+    unhandled `ConnectionResetError` used to abort the entire sync -- which is
+    exactly how a real run died at 141k/878k rows."""
+>>>>>>> Stashed changes
     headers = {
         "apikey": SUPABASE_APIKEY,
         "Prefer": "count=exact",
         "Range": f"{offset}-{offset + limit - 1}",
     }
     params = {"select": "*", "order": "date.desc,id.desc"}
+<<<<<<< Updated upstream
     resp = _get_with_retry(headers, params, {"range": headers["Range"]})
     total = 0
     cr = resp.headers.get("content-range", "")  # "0-99/851762"
     if "/" in cr:
         total = int(cr.rsplit("/", 1)[1])
     return resp.json(), total
+=======
+    last: Exception | None = None
+    for attempt in range(retries):
+        t0 = time.time()
+        try:
+            resp = _session().get(SUPABASE_BASE, headers=headers, params=params,
+                                  timeout=60)
+        except requests.RequestException as e:
+            # A reset connection poisons the pooled socket; drop the Session so
+            # the next attempt dials a fresh one.
+            _local.session = None
+            last = e
+            record("GET", "/rest/v1/research_report", {"range": headers["Range"]},
+                   "ERR", (time.time() - t0) * 1000, host="godel-research")
+            time.sleep(min(2 ** attempt, 30))
+            continue
+        ms = (time.time() - t0) * 1000
+        record("GET", "/rest/v1/research_report", {"range": headers["Range"]},
+               resp.status_code, ms, host="godel-research")
+        if resp.status_code == 429 or resp.status_code >= 500:
+            ra = resp.headers.get("Retry-After")
+            wait = float(ra) if ra and ra.replace(".", "", 1).isdigit() else min(2 ** attempt, 30)
+            last = RuntimeError(f"HTTP {resp.status_code} listing offset={offset}")
+            time.sleep(wait)
+            continue
+        resp.raise_for_status()
+        total = 0
+        cr = resp.headers.get("content-range", "")  # "0-999/878686"
+        if "/" in cr:
+            total = int(cr.rsplit("/", 1)[1])
+        return resp.json(), total
+    raise last or RuntimeError(f"listing failed after {retries} attempts (offset={offset})")
+>>>>>>> Stashed changes
 
 
 def get_by_id(report_id: int) -> dict | None:

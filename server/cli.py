@@ -231,7 +231,7 @@ def cmd_research_fetch(args):
 
 
 def cmd_research_sync(args):
-    n = research.sync_metadata(delay=args.delay)
+    n = research.sync_metadata(delay=args.delay, workers=args.workers)
     c = research.counts()
     print(f"synced {n} rows this run. db totals: {c['total']} total, "
           f"{c['downloaded']} downloaded, {c['pending']} pending, {c['errored']} errored")
@@ -372,7 +372,9 @@ def main():
 
     rs = sub.add_parser("research-sync",
                         help="upsert metadata for every RES report into research.db (no PDFs)")
-    rs.add_argument("--delay", type=float, default=0.15)
+    rs.add_argument("--delay", type=float, default=0.0)
+    rs.add_argument("--workers", type=int, default=4,
+                     help="parallel page fetches (4 saturates the listing endpoint)")
     rs.set_defaults(func=cmd_research_sync)
 
     rst = sub.add_parser("research-status", help="research.db totals: downloaded/pending/errored")
