@@ -37,3 +37,6 @@ venv/
 # ── os / editor ────────────────────────────────────────────────────────────
 .DS_Store
 *.swp
+
+# crash/debug logs kept locally for diagnosis
+*.log.crashed

@@ -192,104 +192,68 @@ def counts() -> dict:
         conn.close()
 
 
-<<<<<<< Updated upstream
 def _get_with_retry(headers: dict, params: dict, ctx: dict,
                     retries: int = 5, backoff: float = 2.0) -> requests.Response:
-    """GET with retry on transient network errors (dropped SSL reads, timeouts,
-    5xx). Backs off exponentially. Raises the last error if all attempts fail."""
-    last_exc = None
+    """GET the catalog endpoint, retrying transient failures (dropped SSL reads,
+    timeouts, 429s, 5xx) with exponential backoff.
+
+    A full sweep is ~879 requests, and a single unhandled ConnectionResetError
+    used to abort the whole sync -- which is exactly how a real run died at
+    141k/878k rows. Goes through the pooled per-thread Session so the parallel
+    sync pays one TLS handshake per thread instead of one per page."""
+    last_exc: Exception | None = None
     for attempt in range(retries):
+        wait = backoff * (2 ** attempt)
         t0 = time.time()
         try:
-            resp = requests.get(SUPABASE_BASE, headers=headers, params=params,
-                                timeout=30)
-            ms = (time.time() - t0) * 1000
-            record("GET", "/rest/v1/research_report", ctx, resp.status_code, ms,
-                   host="godel-research")
-            if resp.status_code >= 500:
-                raise requests.HTTPError(f"server {resp.status_code}", response=resp)
-            resp.raise_for_status()
-            return resp
+            resp = _session().get(SUPABASE_BASE, headers=headers, params=params,
+                                  timeout=60)
         except (requests.RequestException, ConnectionError) as e:
+            # A reset connection poisons the pooled socket; drop the Session so
+            # the next attempt dials a fresh one.
+            _local.session = None
             last_exc = e
-            if attempt == retries - 1:
-                break
-            wait = backoff * (2 ** attempt)
-            logger.warning("request failed ({}); retry {}/{} in {:.0f}s",
-                           e, attempt + 1, retries - 1, wait)
-            time.sleep(wait)
+            record("GET", "/rest/v1/research_report", ctx, "ERR",
+                   (time.time() - t0) * 1000, host="godel-research")
+        else:
+            record("GET", "/rest/v1/research_report", ctx, resp.status_code,
+                   (time.time() - t0) * 1000, host="godel-research")
+            if resp.status_code != 429 and resp.status_code < 500:
+                resp.raise_for_status()
+                return resp
+            ra = resp.headers.get("Retry-After")
+            if ra and ra.replace(".", "", 1).isdigit():
+                wait = float(ra)
+            last_exc = requests.HTTPError(f"server {resp.status_code}", response=resp)
+        if attempt == retries - 1:
+            break
+        logger.warning("listing request failed ({}); retry {}/{} in {:.0f}s",
+                       last_exc, attempt + 1, retries - 1, wait)
+        time.sleep(wait)
     raise last_exc
 
 
 def list_page(offset: int = 0, limit: int = PAGE_SIZE) -> tuple[list[dict], int]:
     """One page of report metadata (no login needed). Returns (rows, total_count)."""
-=======
-def list_page(offset: int = 0, limit: int = PAGE_SIZE,
-              retries: int = 5) -> tuple[list[dict], int]:
-    """One page of report metadata (no login needed). Returns (rows, total_count).
-
-    Retries transient failures. A full sweep is ~879 requests and a single
-    unhandled `ConnectionResetError` used to abort the entire sync -- which is
-    exactly how a real run died at 141k/878k rows."""
->>>>>>> Stashed changes
     headers = {
         "apikey": SUPABASE_APIKEY,
         "Prefer": "count=exact",
         "Range": f"{offset}-{offset + limit - 1}",
     }
     params = {"select": "*", "order": "date.desc,id.desc"}
-<<<<<<< Updated upstream
     resp = _get_with_retry(headers, params, {"range": headers["Range"]})
     total = 0
-    cr = resp.headers.get("content-range", "")  # "0-99/851762"
+    cr = resp.headers.get("content-range", "")  # "0-999/878686"
     if "/" in cr:
         total = int(cr.rsplit("/", 1)[1])
     return resp.json(), total
-=======
-    last: Exception | None = None
-    for attempt in range(retries):
-        t0 = time.time()
-        try:
-            resp = _session().get(SUPABASE_BASE, headers=headers, params=params,
-                                  timeout=60)
-        except requests.RequestException as e:
-            # A reset connection poisons the pooled socket; drop the Session so
-            # the next attempt dials a fresh one.
-            _local.session = None
-            last = e
-            record("GET", "/rest/v1/research_report", {"range": headers["Range"]},
-                   "ERR", (time.time() - t0) * 1000, host="godel-research")
-            time.sleep(min(2 ** attempt, 30))
-            continue
-        ms = (time.time() - t0) * 1000
-        record("GET", "/rest/v1/research_report", {"range": headers["Range"]},
-               resp.status_code, ms, host="godel-research")
-        if resp.status_code == 429 or resp.status_code >= 500:
-            ra = resp.headers.get("Retry-After")
-            wait = float(ra) if ra and ra.replace(".", "", 1).isdigit() else min(2 ** attempt, 30)
-            last = RuntimeError(f"HTTP {resp.status_code} listing offset={offset}")
-            time.sleep(wait)
-            continue
-        resp.raise_for_status()
-        total = 0
-        cr = resp.headers.get("content-range", "")  # "0-999/878686"
-        if "/" in cr:
-            total = int(cr.rsplit("/", 1)[1])
-        return resp.json(), total
-    raise last or RuntimeError(f"listing failed after {retries} attempts (offset={offset})")
->>>>>>> Stashed changes
 
 
 def get_by_id(report_id: int) -> dict | None:
     """Metadata for one report (title/provider/date), for naming the saved PDF."""
     headers = {"apikey": SUPABASE_APIKEY}
     params = {"select": "*", "id": f"eq.{report_id}"}
-    t0 = time.time()
-    resp = requests.get(SUPABASE_BASE, headers=headers, params=params, timeout=30)
-    ms = (time.time() - t0) * 1000
-    record("GET", "/rest/v1/research_report", {"id": report_id}, resp.status_code, ms,
-           host="godel-research")
-    resp.raise_for_status()
+    resp = _get_with_retry(headers, params, {"id": report_id})
     rows = resp.json()
     return rows[0] if rows else None
 
