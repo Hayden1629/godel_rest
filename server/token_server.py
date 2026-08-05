@@ -2,6 +2,7 @@
 here; we persist it via token_store. Stdlib only — no extra deps, binds to
 loopback only so it is never exposed off-machine."""
 import json
+import re
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -9,8 +10,14 @@ from . import token_store
 
 HOST = "127.0.0.1"
 PORT = 8765
-ENDPOINTS_PATH = token_store.STORE_DIR / "endpoints.log"
+ENDPOINTS_PATH = token_store.STORE_DIR / "endpoints.log"      # human-readable
+ENDPOINTS_JSONL = token_store.STORE_DIR / "endpoints.jsonl"   # full detail
+SAMPLES_DIR = token_store.STORE_DIR / "samples"               # response bodies
 _seen_endpoints: set[str] = set()
+
+
+def _slug(text: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9]+", "_", text).strip("_")[:80] or "root"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -73,15 +80,43 @@ class Handler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length", 0))
             data = json.loads(self.rfile.read(length) or b"{}")
-            key = f"{data.get('method','GET')} {data.get('path','')}"
-            if key not in _seen_endpoints:
-                _seen_endpoints.add(key)
-                token_store.STORE_DIR.mkdir(parents=True, exist_ok=True)
-                line = f"{key}\t{data.get('example','')}\n"
-                with open(ENDPOINTS_PATH, "a") as f:
-                    f.write(line)
-                print(f"[discover] {key}    ({data.get('query','') or 'no query'})",
-                      flush=True)
+            command = data.get("command") or "-"
+            method = data.get("method", "GET")
+            path = data.get("path", "")
+            status = data.get("status")
+            # dedupe on (command, method, path) so the same endpoint under a new
+            # command is still recorded, and repeats don't spam the log
+            key = f"{command} {method} {path}"
+            if key in _seen_endpoints:
+                return self._json(200, {"ok": True, "duplicate": True})
+            _seen_endpoints.add(key)
+            token_store.STORE_DIR.mkdir(parents=True, exist_ok=True)
+
+            ts = time.strftime("%Y-%m-%d %H:%M:%S")
+            status_txt = f"{status}" if status is not None else "?"
+            # human-readable line: when | command | status | METHOD path | example
+            with open(ENDPOINTS_PATH, "a") as f:
+                f.write(f"{ts}\t{command}\t{status_txt}\t{method} {path}\t"
+                        f"{data.get('example','')}\n")
+
+            # save the response sample to its own file for shape inspection
+            sample = data.get("sample")
+            sample_file = None
+            if sample:
+                SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
+                sample_file = SAMPLES_DIR / f"{_slug(command)}__{method}__{_slug(path)}.json"
+                sample_file.write_text(sample)
+
+            with open(ENDPOINTS_JSONL, "a") as f:
+                f.write(json.dumps({
+                    "ts": ts, "command": command, "method": method,
+                    "path": path, "query": data.get("query"), "status": status,
+                    "example": data.get("example"),
+                    "sample_file": str(sample_file) if sample_file else None,
+                }) + "\n")
+
+            flag = "" if str(status) == "200" else f"  <- status {status_txt}"
+            print(f"[discover] {command:<22} {method:<5} {path}{flag}", flush=True)
             return self._json(200, {"ok": True})
         except Exception as e:
             return self._json(400, {"error": str(e)})

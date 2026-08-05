@@ -63,9 +63,35 @@ python3 -m server.cli pair AMD NVDA --capital 50000 --benchmark SPY --entry 2 --
 python3 -m server.cli prices AMD                      # historical OHLCV, 6mo daily (table)
 python3 -m server.cli prices AMD --resolution 1W --months 12 --json   # weekly, JSON (programmatic)
 python3 -m server.cli prices AMD --months 6 --excel amd.xlsx          # write .xlsx (or --csv amd.csv)
-python3 -m server.cli discover    # api paths the extension saw the app call
+python3 -m server.cli discover    # endpoints the monitor saw, grouped by command
+python3 -m server.cli discover --command FA --status 404             # filter the capture
 python3 -m server.cli raw /api/v1/trending --param timeframe=24H     # poke any path
 ```
+
+### Terminal commands (`server.terminal`)
+
+Run the terminal's own mnemonics from the shell — the same data the app pulls
+under each command, printed (or `--json`). Word order is flexible: `DES BBY` or
+the terminal-native `BBY EQ DES`.
+
+```bash
+python3 -m server.terminal DES BBY                       # company overview
+python3 -m server.terminal FA BSX --statement balance_sheet --quarters 6
+python3 -m server.terminal EM BBY                        # earnings surprises
+python3 -m server.terminal ERN BBY                       # forward EPS estimates
+python3 -m server.terminal SI BBY                        # short interest
+python3 -m server.terminal ANR BBY                       # analyst ratings
+python3 -m server.terminal TREND                         # trending tickers
+python3 -m server.terminal MOST --tab GAINERS --limit 25 # most active/gainers/losers
+python3 -m server.terminal IPO                           # upcoming + recent IPOs
+python3 -m server.terminal DES BBY --json [--raw]        # machine-readable
+```
+
+Working: **DES, FA, EM, ERN, SI, ANR, TREND, MOST, IPO** (endpoints verified
+live). `TAS`, `HALT`, `TRAN` aren't wired yet — their endpoints weren't found by
+probing; capture them with the monitor (below), then wire them in
+`server/commands.py`. The full endpoint map is in
+[`API_ENDPOINTS.md`](API_ENDPOINTS.md).
 
 Chat options: `--channels <titles-or-uuids> --interval 3 --size 50`
 (omit `--channels` to stream just the default `options` channel).
@@ -98,10 +124,21 @@ Options: `--channels all|<list>`, `--types <comma>` (filter when `all`),
 
 ### Discovering new endpoints
 
-The extension logs every distinct `api.` path the app calls to
-`~/.godel_rest/endpoints.log`. To find an endpoint for a command not yet wired
-up (e.g. RES, FA, breaking news): reload the extension, open that window in the
-terminal, then `python3 -m server.cli discover`.
+The extension monitors every `api.` call the app makes and records, per call,
+the **terminal command in effect** (correlated from `/api/v1/command-action`),
+the **HTTP status**, and a **response-body sample**. To find the endpoint for a
+command not yet wired up (e.g. TAS, HALT, TRAN): reload the extension, open that
+window / run that command in the terminal, then:
+
+```bash
+python3 -m server.cli discover                 # grouped by command context
+python3 -m server.cli discover --command TAS   # just that command's calls
+python3 -m server.cli discover --status 404    # what broke
+```
+
+Capture files: `~/.godel_rest/endpoints.log` (human-readable),
+`~/.godel_rest/endpoints.jsonl` (full detail), `~/.godel_rest/samples/`
+(one response body per command+endpoint, for inspecting a new payload's shape).
 
 ## Data
 
@@ -121,13 +158,17 @@ SQLite at `godel_rest/godel_rest.db`:
 - [X] Channel enumeration via `/api/chat/channels` (63 channels mapped).
 - [X] News poller — `/api/v1/top-news-items` (`?important=true` supported).
 - [X] Trending — `/api/v1/trending?timeframe=24H` (ranked by mentions).
-- [X] Endpoint discovery logger in the extension.
+- [X] Endpoint monitor in the extension (now captures command + status + sample).
+- [X] Text commands — **DES/FA/EM/ERN/SI/ANR/TREND/MOST/IPO** live in
+  `server.terminal` (`server/commands.py`). See [`API_ENDPOINTS.md`](API_ENDPOINTS.md).
+- [X] FA migrated to the new `financial-metric-group` endpoint (old
+  `consolidated_financials` route was retired → 404).
 - [ ] Breaking news — old `/api/fetchBreaking` is 404. Find the replacement via
   `discover` (open the News/breaking window in the app).
+- [ ] TAS / HALT / TRAN — endpoints not found by probing; capture with `discover`.
 - [ ] Cursor param for history backfill (response gives `prevCursor`; test
   `?cursor=`/`?before=`/`?prevCursor=` via `raw`).
 - [ ] Confirm `createdAt` is UTC.
-- [ ] More text commands (DES/FA/ANR/etc.) once their endpoints are discovered.
 
 If `verify` ever returns a 403 Cloudflare challenge on the `api.` host (not
 expected), the fallback is to run the fetch inside the page via the extension
@@ -211,7 +252,7 @@ pricing in.
 
 ```
 analytics/
-  financials.py  Gödel consolidated_financials -> tidy period frame + Holt-Winters
+  financials.py  Gödel financial-metric-group -> tidy period frame + Holt-Winters
                  forecast + trend charts  (fetch_financials / plot_trends)
   model.py       merges the 3 statements, derives FCF/margins, builds enterprise
                  value, runs the reverse DCF, assembles the company card
@@ -234,12 +275,11 @@ python3 -m analytics.run fa BSX --statement cash_flow --period QTR --table
 `model BSX` prints price / market cap / EV / TTM FCF / EV·FCF / implied-vs-
 historical FCF growth, and saves charts + statement files under `output/`.
 
-**How EV + FCF are sourced (no Gödel "DES" — that command is a dead DOM
-scraper):**
+**How EV + FCF are sourced:**
 
 | input                             | source                                                                                                         |
 | --------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| 3 statements                      | Gödel`GET /api/v1/consolidated_financials/{income_statement\|balance_sheet\|cash_flow}/{series_id}/{QTR\|ANN}` |
+| 3 statements                      | Gödel`GET /api/v1/terminal/financial-metric-group/legal-entities/{legalEntityId}?instrumentId={instrumentId}` (all 3 statements in one call) |
 | share price (last close)          | Gödel`GET /api/v1/search?query=TICKER`                                                                      |
 | shares outstanding, name, summary | Massive`GET /v3/reference/tickers/{T}`                                                                       |
 | price history → beta / YTD / vol | Massive`GET /v2/aggs/...` (ticker + SPY)                                                                     |
@@ -248,10 +288,16 @@ scraper):**
 growth that makes the discounted TTM-FCF stream equal EV, then compares it to
 the historical FCF CAGR.
 
-> Note: the cash-flow statement key is **`cash_flow`** (not
-> `cash_flow_statement`, which returns empty). Coverage gaps happen — some names
-> (e.g. DSGX) have only a balance sheet in Gödel/Massive, so FCF and the reverse
-> DCF can't be computed; the tools fall back to balance-sheet trends.
+> **Endpoint migration (Aug 2026):** the old
+> `/api/v1/consolidated_financials/{statement}/{series_id}/{period}` route was
+> retired (now 404). The replacement returns all three statements as flat
+> records keyed by `seriesTypeId`, with a self-describing `financialMetricTypes`
+> id→name catalog, in **raw dollars** (the old route was in millions).
+> `financials.py` maps `seriesTypeId → slug`, scales monetary/share values ÷1e6,
+> aligns line items on `(fiscalYear, fiscalPeriod)`, and resolves the
+> `legalEntityId`/`instrumentId` from `/api/v2/company-profile/{seriesId}`. See
+> [`API_ENDPOINTS.md`](API_ENDPOINTS.md). Coverage gaps still happen — some names
+> report only a balance sheet, so FCF/reverse-DCF fall back to balance-sheet trends.
 
 ### Interactive dashboard
 

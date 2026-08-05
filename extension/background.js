@@ -46,10 +46,13 @@ async function observe(msg) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        command: msg.command,
         method: msg.method,
         path: msg.path,
         query: msg.query,
+        status: msg.status,
         example: msg.example,
+        sample: msg.sample,
       }),
     });
   } catch (_) {

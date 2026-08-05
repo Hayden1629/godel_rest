@@ -6,6 +6,7 @@ The export is transposed: line items are rows, fiscal periods are columns
 revenue, margins, etc. are time series you can trend and forecast.
 """
 import re
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -14,10 +15,75 @@ import pandas as pd
 QUARTER_END = {1: ("03", "31"), 2: ("06", "30"), 3: ("09", "30"), 4: ("12", "31")}
 # matches "Q2 2008" (xlsx) and "Q2-2008" (API dataIndex)
 _PERIOD_RE = re.compile(r"Q([1-4])[\s-]+(\d{4})", re.I)
-# NB: the cash-flow endpoint key is "cash_flow" — "cash_flow_statement" 404s to
-# an empty {columns:[],entries:[]} payload. Kept the alias in CLI for back-compat.
 STATEMENTS = ("income_statement", "balance_sheet", "cash_flow")
 _STATEMENT_ALIASES = {"cash_flow_statement": "cash_flow", "cashflow": "cash_flow"}
+
+# ── new financials endpoint (Aug 2026) ────────────────────────────────────────
+# The old /api/v1/consolidated_financials/{statement}/{series_id}/{period} route
+# was retired (now 404s). The replacement returns *all three statements at once*
+# as flat records keyed by an integer `seriesTypeId`, plus a self-describing
+# `financialMetricTypes` id->name catalog:
+#     GET /api/v1/terminal/financial-metric-group/legal-entities/{legalEntityId}
+#         ?instrumentId={instrumentId}
+# The legalEntityId + instrumentId are resolved from the seriesId via
+# /api/v2/company-profile/{seriesId}. See resolve_entity().
+_METRIC_GROUP_PATH = (
+    "/api/v1/terminal/financial-metric-group/legal-entities/{leid}")
+
+# seriesTypeId -> canonical slug. Names verified live from the endpoint's own
+# financialMetricTypes catalog; slugs chosen to match _finalize()/model.py.
+SERIES_TYPE_SLUG: dict[int, str] = {
+    # income statement
+    8: "revenue", 9: "cogs", 10: "gross_profit", 11: "sga", 12: "rnd",
+    13: "opex", 14: "operating_income", 15: "other_income",
+    16: "total_other_income", 19: "pretax_income", 20: "income_taxes",
+    21: "net_income", 22: "net_income_cont", 23: "shares_basic",
+    24: "shares_diluted", 26: "eps_diluted", 76: "ebit", 77: "ebitda",
+    211: "total_revenue",
+    # balance sheet
+    27: "cash_equivalents", 30: "inventory", 31: "other_st_assets",
+    32: "total_current_assets", 33: "ppe", 34: "lt_investments",
+    35: "other_lt_assets", 36: "total_lt_assets", 37: "total_assets",
+    38: "short_term_debt", 39: "accounts_payable", 41: "other_st_liabilities",
+    42: "total_current_liabilities", 43: "long_term_debt",
+    44: "other_lt_liabilities", 45: "total_liabilities", 46: "commitments",
+    47: "common_stock", 48: "retained_earnings", 49: "aoci",
+    50: "total_common_equity", 51: "equity_and_nci",
+    52: "total_pref_common_equity", 53: "shareholder_equity",
+    54: "total_liabilities_and_equity",
+    # cash flow statement
+    55: "depreciation", 56: "noncash_adjustments", 57: "operating_cash_flow",
+    58: "operating_cash_flow_cont", 59: "cash_interest_paid",
+    60: "cash_taxes_paid", 61: "capex", 62: "acquisitions",
+    63: "purchase_investments", 64: "sale_investments", 65: "other_investing",
+    66: "investing_cash_flow", 67: "investing_cash_flow_cont",
+    68: "debt_repaid", 69: "buybacks", 70: "dividends_paid", 71: "debt_issued",
+    72: "other_financing", 73: "financing_cash_flow",
+    74: "financing_cash_flow_cont", 75: "net_change_cash",
+}
+
+# which seriesTypeIds belong to each statement (for per-statement splitting)
+STATEMENT_TYPE_IDS: dict[str, frozenset[int]] = {
+    "income_statement": frozenset(
+        {8, 9, 10, 11, 12, 13, 14, 15, 16, 19, 20, 21, 22, 23, 24, 26,
+         76, 77, 211}),
+    "balance_sheet": frozenset(
+        {27, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 41, 42, 43, 44, 45,
+         46, 47, 48, 49, 50, 51, 52, 53, 54}),
+    "cash_flow": frozenset(
+        {55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70,
+         71, 72, 73, 74, 75}),
+}
+
+_PERIODICITY = {"QTR": "QUARTERLY", "ANN": "ANNUAL", "SEMI": "SEMIANNUAL"}
+
+# The new endpoint reports raw dollars / raw share counts; the rest of the code
+# base (model.py valuation, charts, the retired xlsx export) works in millions.
+# Scale every monetary line item and share count to millions on ingest; leave
+# per-share figures (EPS) alone. Margins/pcts are derived later from ratios and
+# are unaffected by a uniform scale.
+_MILLIONS = 1e6
+_UNSCALED_SLUGS = frozenset({"eps_diluted"})
 
 # friendly aliases for Gödel income-statement row labels — covers both the xlsx
 # export ("Revenue") and the raw API ("Total Revenue", "SG&A" -> sg_a slug).
@@ -132,15 +198,6 @@ def _finalize(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def fetch_statement_raw(series_id: int, statement: str = "income_statement",
-                        period: str = "QTR") -> dict:
-    """Raw {columns, entries} payload — used for verbatim file export."""
-    from server import api_client
-    statement = _STATEMENT_ALIASES.get(statement, statement)
-    return api_client.get(
-        f"/api/v1/consolidated_financials/{statement}/{series_id}/{period}")
-
-
 # ── fetch straight from the Gödel API (no manual xlsx download) ────────────────
 
 def resolve_series_id(ticker: str) -> int:
@@ -156,38 +213,130 @@ def resolve_series_id(ticker: str) -> int:
     raise ValueError(f"no instrument found for {ticker!r}")
 
 
-def _frame_from_api(payload: dict) -> pd.DataFrame:
-    """Build a period-indexed frame from the {columns, entries} API shape."""
-    col_dates = []
-    for c in payload.get("columns", []):
-        d = _period_to_date(c.get("dataIndex") or c.get("title"))
-        if d is not None:
-            col_dates.append((c.get("dataIndex"), d))
-    data, idx = {}, [d for _, d in col_dates]
-    for e in payload.get("entries", []):
-        label = e.get("item") or e.get("key")
-        if not label:
+def entity_from_series(series_id: int) -> dict:
+    """Resolve the legalEntityId + instrumentId the new financials endpoint needs
+    from a seriesId, via /api/v2/company-profile. Returns a dict with keys
+    series_id, legal_entity_id, instrument_id, ticker, name."""
+    from server import api_client
+    prof = api_client.get(f"/api/v2/company-profile/{series_id}")
+    counts = prof.get("marketCapSeriesIdsAndShareCounts") or []
+    # prefer the entry that matches our seriesId; fall back to the first one
+    entry = next((c for c in counts if c.get("seriesId") == series_id),
+                 counts[0] if counts else None)
+    if not entry:
+        raise ValueError(f"no legal entity for series {series_id}")
+    ctx = entry.get("seriesContext") or {}
+    le = ctx.get("legalEntity") or {}
+    inst = ctx.get("instrument") or {}
+    if le.get("id") is None or inst.get("id") is None:
+        raise ValueError(f"company profile for {series_id} lacks entity ids")
+    return {
+        "series_id": series_id,
+        "legal_entity_id": le["id"],
+        "instrument_id": inst["id"],
+        "ticker": prof.get("ticker"),
+        "name": prof.get("name"),
+    }
+
+
+def resolve_entity(ticker: str) -> dict:
+    """Ticker -> {series_id, legal_entity_id, instrument_id, ticker, name}."""
+    return entity_from_series(resolve_series_id(ticker))
+
+
+@lru_cache(maxsize=64)
+def fetch_metric_group(series_id: int) -> dict:
+    """Raw payload from the financial-metric-group endpoint (all statements +
+    the financialMetricTypes catalog), cached per series id so callers that
+    want each statement separately don't re-hit a ~1.5MB endpoint three times."""
+    from server import api_client
+    ent = entity_from_series(series_id)
+    return api_client.get(
+        _METRIC_GROUP_PATH.format(leid=ent["legal_entity_id"]),
+        params={"instrumentId": ent["instrument_id"]})
+
+
+def _records_to_frame(records: list[dict], periodicity: str) -> pd.DataFrame:
+    """Turn flat financialMetrics records into a period-indexed wide frame.
+
+    Keeps only rows with a real `actual` for the requested periodicity, mapping
+    seriesTypeId -> slug. Line items for one fiscal quarter can report on
+    slightly different `periodEnd` dates (a few days' drift), so metrics are
+    aligned on (fiscalYear, fiscalPeriod) and dated by that group's latest
+    periodEnd. On restatements the newest `asOf` wins."""
+    # fiscal_key -> {slug: (asOf, value)}, plus fiscal_key -> representative date
+    cells: dict[tuple, dict[str, tuple[str, float]]] = {}
+    dates: dict[tuple, str] = {}
+    for r in records:
+        if r.get("periodicity") != periodicity:
             continue
-        data[_slug(label)] = [_to_number(e.get(di)) for di, _ in col_dates]
-    df = pd.DataFrame(data, index=pd.DatetimeIndex(idx, name="period"))
-    df = df[~df.index.duplicated()].sort_index()
-    return df
+        slug = SERIES_TYPE_SLUG.get(r.get("seriesTypeId"))
+        actual = r.get("actual")
+        pe = r.get("periodEnd")
+        if slug is None or actual is None or not pe:
+            continue
+        fkey = (r.get("fiscalYear"), r.get("fiscalPeriod"))
+        as_of = r.get("asOf") or ""
+        value = float(actual)
+        if slug not in _UNSCALED_SLUGS:
+            value /= _MILLIONS  # dollars/share-counts -> millions
+        row = cells.setdefault(fkey, {})
+        if slug not in row or as_of >= row[slug][0]:
+            row[slug] = (as_of, value)
+        if pe > dates.get(fkey, ""):
+            dates[fkey] = pe
+
+    if not cells:
+        return pd.DataFrame()
+    data: dict[str, dict] = {}
+    for fkey, row in cells.items():
+        idx = pd.Timestamp(dates[fkey])
+        for slug, (_as_of, val) in row.items():
+            data.setdefault(slug, {})[idx] = val
+    df = pd.DataFrame(data)
+    df.index.name = "period"
+    return df[~df.index.duplicated()].sort_index()
 
 
-def frame_from_payload(payload: dict) -> pd.DataFrame:
-    """Build the finalized period-indexed frame from a raw {columns,entries}
-    payload — lets callers reuse a payload they already fetched."""
-    return _finalize(_frame_from_api(payload))
+def frame_from_payload(payload: dict, statement: str = "income_statement",
+                       period: str = "QTR") -> pd.DataFrame:
+    """Finalized period-indexed frame for one statement, built from a metric-group
+    payload the caller already fetched (lets model.py reuse a single download)."""
+    statement = _STATEMENT_ALIASES.get(statement, statement)
+    periodicity = _PERIODICITY.get(period, period)
+    type_ids = STATEMENT_TYPE_IDS.get(statement, frozenset())
+    records = [r for r in payload.get("financialMetrics", [])
+               if r.get("seriesTypeId") in type_ids]
+    return _finalize(_records_to_frame(records, periodicity))
+
+
+def fetch_statement_raw(series_id: int, statement: str = "income_statement",
+                        period: str = "QTR") -> dict:
+    """The metric-group slice for one statement — used for verbatim file export.
+    Returns the same shape as the live endpoint (financialMetrics +
+    financialMetricTypes + currency), filtered to this statement & period."""
+    statement = _STATEMENT_ALIASES.get(statement, statement)
+    periodicity = _PERIODICITY.get(period, period)
+    payload = fetch_metric_group(series_id)
+    type_ids = STATEMENT_TYPE_IDS.get(statement, frozenset())
+    metrics = [r for r in payload.get("financialMetrics", [])
+               if r.get("seriesTypeId") in type_ids
+               and r.get("periodicity") == periodicity]
+    types = [t for t in payload.get("financialMetricTypes", [])
+             if t.get("id") in type_ids]
+    return {
+        "statement": statement,
+        "period": period,
+        "currency": payload.get("currency"),
+        "financialMetricTypes": types,
+        "financialMetrics": metrics,
+    }
 
 
 def fetch_statement(series_id: int, statement: str = "income_statement",
                     period: str = "QTR") -> pd.DataFrame:
     """Fetch one financial statement (QTR or ANN) for a series id."""
-    from server import api_client
-    statement = _STATEMENT_ALIASES.get(statement, statement)
-    payload = api_client.get(
-        f"/api/v1/consolidated_financials/{statement}/{series_id}/{period}")
-    return _finalize(_frame_from_api(payload))
+    return frame_from_payload(fetch_metric_group(series_id), statement, period)
 
 
 def fetch_financials(ticker: str, statement: str = "income_statement",

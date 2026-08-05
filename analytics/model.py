@@ -11,7 +11,7 @@ proxy used elsewhere). The reverse DCF targets *enterprise value*
 (market cap + debt - cash), the correct claim against firm free cash flow.
 
 Inputs and where they come from (all verified working, no DOM scraping):
-  - income / balance / cash-flow statements .... Gödel /consolidated_financials
+  - income / balance / cash-flow statements .... Gödel /financial-metric-group
   - share price (last close) .................... Gödel /api/v1/search
   - shares outstanding + market cap ............. Massive /v3/reference/tickers
   - net debt (total debt - cash) ................ Gödel balance sheet
@@ -66,7 +66,7 @@ def download_statements(ticker: str, period: str = "QTR",
         # one GET: keep the raw payload for the file export and build the frame
         # from the same payload (no second round-trip).
         raw = F.fetch_statement_raw(series_id, statement, period)
-        df = F.frame_from_payload(raw)
+        df = F.frame_from_payload(raw, statement, period)
         stem = f"{ticker.upper()}_{statement}_{period}"
         df.to_csv(outdir / f"{stem}.csv")
         (outdir / f"{stem}.json").write_text(json.dumps(raw, indent=1))
