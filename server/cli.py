@@ -112,11 +112,44 @@ def cmd_channels(args):
 
 
 def cmd_discover(args):
-    """Print api endpoints the extension has observed the app calling."""
+    """Print api endpoints the extension has observed the app calling, grouped by
+    the terminal command that triggered them (from the endpoint monitor).
+
+    The richer capture (command, HTTP status, response sample) lives in
+    endpoints.jsonl; falls back to the plain endpoints.log if that's absent."""
+    jsonl = token_store.STORE_DIR / "endpoints.jsonl"
+    if jsonl.exists():
+        rows = []
+        for ln in jsonl.read_text().splitlines():
+            try:
+                rows.append(json.loads(ln))
+            except ValueError:
+                continue
+        if args.command:
+            want = args.command.lower()
+            rows = [r for r in rows if want in (r.get("command") or "").lower()]
+        if args.status:
+            rows = [r for r in rows if str(r.get("status")) == str(args.status)]
+        from collections import defaultdict
+        by_cmd = defaultdict(list)
+        for r in rows:
+            by_cmd[r.get("command") or "-"].append(r)
+        print(f"{len(rows)} calls across {len(by_cmd)} command context(s):\n")
+        for cmd in sorted(by_cmd):
+            print(f"=== {cmd} ===")
+            for r in by_cmd[cmd]:
+                st = r.get("status")
+                flag = "" if str(st) == "200" else f"  <- {st}"
+                smp = "  [sample]" if r.get("sample_file") else ""
+                print(f"  {r.get('method',''):<5} {r.get('path','')}{flag}{smp}")
+            print()
+        return
+
     path = token_store.STORE_DIR / "endpoints.log"
     if not path.exists():
-        print("no endpoints captured yet. Reload the extension and click around "
-              "the terminal (open News, RES, etc.).")
+        print("no endpoints captured yet. Run `python -m server.token_server`, "
+              "reload the extension, and run the command in the terminal "
+              "(e.g. type a ticker then TAS / HALT / TRAN).")
         return
     lines = sorted(set(path.read_text().splitlines()))
     print(f"{len(lines)} distinct endpoints observed:\n")
@@ -305,7 +338,13 @@ def main():
                     help="filter by type, e.g. user_write,user_only")
     ch.set_defaults(func=cmd_channels)
 
-    sub.add_parser("discover").set_defaults(func=cmd_discover)
+    dsc = sub.add_parser("discover",
+                         help="endpoints the monitor captured, grouped by command")
+    dsc.add_argument("--command", default=None,
+                     help="filter to a command context substring, e.g. excel or FA")
+    dsc.add_argument("--status", default=None,
+                     help="filter by HTTP status, e.g. 404")
+    dsc.set_defaults(func=cmd_discover)
 
     ra = sub.add_parser("ratio",
                         help="regress ticker y against ticker x (beta, r2, std err, ...)")
