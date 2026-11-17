@@ -37,17 +37,18 @@ case "${1:-status}" in
     start_one token_server -m server.token_server
     sleep 1
     start_one chat_poller  -m server.cli chat --channels "$CHANNELS"
+    start_one schwab_keepalive -m broker.keepalive
     echo "Done. Load the Chrome extension + log into app.godelterminal.com so the"
     echo "token relays. Check: ./services.sh status"
     ;;
   stop)
-    for name in chat_poller token_server; do
+    for name in chat_poller token_server schwab_keepalive; do
       if _alive "$name"; then kill "$(_pid "$name")" && echo "  stopped $name"; fi
       rm -f "$RUN/$name.pid"
     done
     ;;
   status)
-    for name in token_server chat_poller; do
+    for name in token_server chat_poller schwab_keepalive; do
       if _alive "$name"; then echo "  $name: RUNNING (pid $(_pid "$name"))";
       else echo "  $name: stopped"; fi
     done
@@ -67,7 +68,9 @@ try:
 except Exception:
     print("  db: not initialized yet")
 PY
+    # Schwab token status
+    "$PY" -m broker.cli auth 2>/dev/null || echo "  schwab: status check failed"
     ;;
-  logs) tail -n 40 -f "$RUN"/token_server.log "$RUN"/chat_poller.log ;;
+  logs) tail -n 40 -f "$RUN"/token_server.log "$RUN"/chat_poller.log "$RUN"/schwab_keepalive.log ;;
   *) echo "usage: ./services.sh {start|stop|status|logs}"; exit 1 ;;
 esac

@@ -57,6 +57,23 @@ def ticker_details(ticker: str) -> dict:
     }
 
 
+def news(ticker: str | None = None, limit: int = 10) -> list[dict]:
+    """Recent news articles, newest first (/v2/reference/news). Optional ticker
+    filter; without it returns the market-wide feed."""
+    params: dict = {"limit": limit, "order": "desc", "sort": "published_utc"}
+    if ticker:
+        params["ticker"] = ticker.upper()
+    res = _get("/v2/reference/news", params).get("results") or []
+    return [{
+        "published": a.get("published_utc"),
+        "title": a.get("title"),
+        "publisher": (a.get("publisher") or {}).get("name"),
+        "tickers": a.get("tickers"),
+        "url": a.get("article_url"),
+        "description": a.get("description"),
+    } for a in res]
+
+
 def _flatten(stmt: dict) -> dict:
     out = {}
     for k, v in (stmt or {}).items():

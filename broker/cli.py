@@ -7,8 +7,20 @@
     python3 -m broker.cli risk                  # beta/vol/concentration (uses Massive)
     python3 -m broker.cli quote AAPL            # live quote
     python3 -m broker.cli hours                 # is the market open
-    python3 -m broker.cli order AAPL BUY 10 --confirm          # market order
-    python3 -m broker.cli order AAPL BUY 10 --limit 190 --confirm
+    python3 -m broker.cli propose AAPL BUY 10                   # ask Hayden
+    python3 -m broker.cli propose AAPL BUY 10 --limit 190
+    python3 -m broker.cli propose-cancel <ORDER_ID>
+    python3 -m broker.cli confirm t-1a2b3c4d --yes              # place it
+    python3 -m broker.cli pending                               # live requests
+    python3 -m broker.cli revoke [TICKET]                       # kill request(s)
+    python3 -m broker.cli order AAPL BUY 10 --confirm           # MANUAL only
+
+Trading model: `propose` size-checks the order and returns the exact message to
+put in front of Hayden. He replies YES in the normal chat; `confirm --yes`
+places precisely the order he was shown. One approval, one order, 15-minute
+expiry. Set GODEL_CONFIRM_MODE=code for the stricter typed-code flow. `order`
+is the direct human path, needs GODEL_ALLOW_TRADING=1 in your own shell, and is
+not on the agent allowlist. Panic: GODEL_TRADING_HALT=1 refuses everything.
 
 First-time setup:  python3 -m broker.setup_auth
 """
@@ -73,6 +85,54 @@ def cmd_hours(_):
     print("market open:", MarketDataClient().is_market_open())
 
 
+def cmd_propose(args):
+    from . import authorization
+    res = authorization.propose(args.symbol, args.side, args.quantity,
+                                limit=args.limit, note=args.note or "",
+                                duration=args.duration)
+    _print(res)
+    if res.get("send_to_hayden"):
+        print("\n--- send this to Hayden verbatim, then wait for YES ---\n"
+              + res["send_to_hayden"], file=sys.stderr)
+    sz = res["sizing"]
+    if sz["breach"]:
+        print("\n*** SIZE WARNING: " + sz["detail"], file=sys.stderr)
+        print("*** Above your sizing guidance. Hayden's confirmation approves "
+              "the oversize position knowingly.", file=sys.stderr)
+    elif sz["ok"] is None:
+        print("\n*** SIZE UNVERIFIED: " + sz["detail"], file=sys.stderr)
+
+
+def cmd_propose_cancel(args):
+    from . import authorization
+    _print(authorization.propose_cancel(args.order_id, note=args.note or ""))
+
+
+def cmd_confirm(args):
+    from . import authorization
+    from .orders import OrderManager
+    if not args.code and not args.yes:
+        print("Refusing: pass --yes (Hayden approved in chat) or the code.",
+              file=sys.stderr)
+        sys.exit(2)
+    try:
+        _print(OrderManager().place_authorized(args.ticket, args.code))
+    except (authorization.AuthorizationError, authorization.TradingHalted) as e:
+        print(f"REFUSED: {e}", file=sys.stderr)
+        sys.exit(3)
+
+
+def cmd_pending(_):
+    from . import authorization
+    _print(authorization.pending())
+
+
+def cmd_revoke(args):
+    from . import authorization
+    n = authorization.revoke(args.ticket or "")
+    print(f"revoked {n} authorization request(s)")
+
+
 def cmd_order(args):
     if not args.confirm:
         print("Refusing to place a real order without --confirm.", file=sys.stderr)
@@ -106,6 +166,35 @@ def main():
     q.add_argument("symbol")
     q.set_defaults(func=cmd_quote)
     sub.add_parser("hours").set_defaults(func=cmd_hours)
+    pr = sub.add_parser("propose", help="request Hayden's authorization for a trade")
+    pr.add_argument("symbol")
+    pr.add_argument("side", choices=["BUY", "SELL", "SELL_SHORT", "BUY_TO_COVER"])
+    pr.add_argument("quantity", type=int)
+    pr.add_argument("--limit", type=float, default=None)
+    pr.add_argument("--duration", default="DAY", choices=["DAY", "GOOD_TILL_CANCEL", "FILL_OR_KILL", "IMMEDIATE_OR_CANCEL"],
+                    help="order duration (default: DAY)")
+    pr.add_argument("--note", default="", help="one line of context for Hayden")
+    pr.set_defaults(func=cmd_propose)
+
+    pc = sub.add_parser("propose-cancel", help="request authorization to cancel")
+    pc.add_argument("order_id")
+    pc.add_argument("--note", default="")
+    pc.set_defaults(func=cmd_propose_cancel)
+
+    cf = sub.add_parser("confirm", help="place a trade Hayden authorized")
+    cf.add_argument("ticket")
+    cf.add_argument("code", nargs="?", default=None,
+                    help="only in GODEL_CONFIRM_MODE=code")
+    cf.add_argument("--yes", action="store_true",
+                    help="Hayden approved this proposal in chat")
+    cf.set_defaults(func=cmd_confirm)
+
+    sub.add_parser("pending", help="live authorization requests").set_defaults(
+        func=cmd_pending)
+    rv = sub.add_parser("revoke", help="kill pending request(s)")
+    rv.add_argument("ticket", nargs="?", default="")
+    rv.set_defaults(func=cmd_revoke)
+
     o = sub.add_parser("order")
     o.add_argument("symbol")
     o.add_argument("side", choices=["BUY", "SELL", "SELL_SHORT", "BUY_TO_COVER"])

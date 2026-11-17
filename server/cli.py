@@ -295,6 +295,43 @@ def cmd_raw(args):
     print(json.dumps(api_client.get(args.path, params=params), indent=2))
 
 
+def cmd_transcript(args):
+    from . import transcripts
+    is_ticker = "/" not in args.path
+    if args.local:
+        hits = sorted(transcripts.OUT_DIR.glob(f"{args.path.upper()}_*.txt"))
+        if not hits:
+            print(f"no local transcripts for {args.path.upper()} in "
+                  f"{transcripts.OUT_DIR}")
+        for h in hits:
+            print(h)
+        return
+    if is_ticker and args.all:
+        for r in transcripts.fetch_all(args.path):
+            print(f"{r.get('date','?')}  {r.get('title','?')}  -> {r['status']}"
+                  + (f"  {r.get('file')}" if r.get("file") else ""))
+        return
+    if is_ticker:
+        listing = transcripts.list_transcripts(args.path)
+        if args.json:
+            print(json.dumps(listing, indent=2))
+        else:
+            for it in listing:
+                print(f"{it.get('date','?')}  {it.get('title','?')}\n"
+                      f"    {it['path']}")
+            print(f"\n{len(listing)} transcripts. Fetch one: "
+                  f"server.cli transcript <path>; all: transcript "
+                  f"{args.path.upper()} --all")
+        return
+    doc = transcripts.fetch_parsed(args.path, save=not args.no_save)
+    if args.json:
+        print(json.dumps(doc, indent=2))
+    else:
+        print(transcripts.to_text(doc))
+        if doc.get("saved"):
+            print(f"\n[saved -> {doc['saved']}]")
+
+
 def main():
     p = argparse.ArgumentParser(prog="godel-rest")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -397,6 +434,20 @@ def main():
     hp.add_argument("--excel", metavar="PATH", help="write bars to an .xlsx file")
     hp.add_argument("--csv", metavar="PATH", help="write bars to a .csv file")
     hp.set_defaults(func=cmd_prices)
+
+    tsc = sub.add_parser(
+        "transcript",
+        help="earnings-call transcripts: TICKER lists available, TICKER --all "
+             "fetches every one, a file-content path/URL fetches that document; "
+             "--local TICKER lists already-saved files")
+    tsc.add_argument("path", help="ticker, or /api/news/file-content/... path/URL")
+    tsc.add_argument("--all", action="store_true",
+                     help="with a ticker: fetch + save every available transcript")
+    tsc.add_argument("--json", action="store_true")
+    tsc.add_argument("--local", action="store_true",
+                     help="list saved transcript files for a ticker (offline)")
+    tsc.add_argument("--no-save", action="store_true")
+    tsc.set_defaults(func=cmd_transcript)
 
     rl = sub.add_parser("research-list",
                         help="page through RES report metadata (id/title/provider/date), no download")

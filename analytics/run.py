@@ -70,6 +70,10 @@ def main():
         sp = sub.add_parser(name)
         sp.add_argument("ticker")
 
+    nw = sub.add_parser("news")  # Massive news feed (market-wide or per ticker)
+    nw.add_argument("ticker", nargs="?", default=None)
+    nw.add_argument("--limit", type=int, default=10)
+
     # FA trends + forecast from a ticker (live API) OR a downloaded xlsx file
     f = sub.add_parser("fa")
     f.add_argument("source", help="ticker (e.g. BSX) or path to a Godel FA .xlsx")
@@ -100,6 +104,28 @@ def main():
     md.add_argument("--years", type=int, default=10)
     md.add_argument("--out", default="output")
 
+    # ClinicalTrials.gov — pipeline / catalysts for pre-revenue names
+    tr = sub.add_parser("trials", help="clinical trial pipeline for a sponsor")
+    tr.add_argument("sponsor", help="company name, e.g. \'Vertex Pharmaceuticals\'")
+    tr.add_argument("--mode", choices=["pipeline", "readouts", "history"],
+                    default="pipeline")
+    tr.add_argument("--months", type=int, default=18,
+                    help="readout window (--mode readouts)")
+    tr.add_argument("--limit", type=int, default=60)
+
+    ts = sub.add_parser("trial", help="one study by NCT id")
+    ts.add_argument("nct_id")
+
+    # watched users — whose calls Hayden wants pushed to him
+    w = sub.add_parser("watch", help="new directional calls from watched users")
+    w.add_argument("--since-id", type=int, default=None)
+    w.add_argument("--limit", type=int, default=200)
+    w.add_argument("--mark", action="store_true",
+                   help="advance the cursor — ONLY after the alert was delivered")
+    w.add_argument("--status", action="store_true")
+    w.add_argument("--add", default=None, help="start watching a username")
+    w.add_argument("--remove", default=None, help="stop watching a username")
+
     a = p.parse_args()
     if a.cmd == "refresh":
         pipeline.refresh(min_ticker_mentions=a.min_mentions, price_delay=a.delay,
@@ -120,6 +146,32 @@ def main():
     elif a.cmd == "activity":
         print(userstats.overview())
         print(userstats.top_senders(limit=20).to_string(index=False))
+    elif a.cmd == "watch":
+        from . import user_watch
+        if a.add:
+            print(json.dumps(user_watch.add_user(a.add), indent=2))
+        elif a.remove:
+            print(json.dumps(user_watch.remove_user(a.remove), indent=2))
+        elif a.status:
+            print(json.dumps(user_watch.status(), indent=2, default=str))
+        else:
+            res = user_watch.scan(since_id=a.since_id, limit=a.limit)
+            print(json.dumps(res, indent=2, default=str))
+            if a.mark and res["newest_id"]:
+                user_watch.mark_seen(res["newest_id"])
+    elif a.cmd == "trials":
+        from . import trials as tr_mod
+        fn = {"pipeline": lambda: tr_mod.pipeline(a.sponsor, limit=a.limit),
+              "readouts": lambda: tr_mod.readouts(a.sponsor, months=a.months,
+                                                  limit=a.limit),
+              "history": lambda: tr_mod.history(a.sponsor, limit=a.limit)}[a.mode]
+        print(json.dumps(fn(), indent=2, default=str))
+    elif a.cmd == "trial":
+        from . import trials as tr_mod
+        print(json.dumps(tr_mod.study(a.nct_id), indent=2, default=str))
+    elif a.cmd == "news":
+        from . import massive
+        print(json.dumps(massive.news(a.ticker, a.limit), indent=2))
     elif a.cmd == "price":
         print(json.dumps(research.price_summary(a.ticker), indent=2))
     elif a.cmd == "fundamentals":
