@@ -62,7 +62,10 @@ CREATE INDEX IF NOT EXISTS idx_news_time ON news_items(time);
 
 class Sink:
     def __init__(self, db_path: Path | str = DB_PATH):
-        self.conn = sqlite3.connect(str(db_path))
+        # WAL so readers (the GUI, analytics) never block the poller/backfill
+        # writers; the longer timeout rides out the two writers overlapping.
+        self.conn = sqlite3.connect(str(db_path), timeout=30)
+        self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)
         self._migrate()
         self.conn.commit()

@@ -21,3 +21,6 @@ plotly>=5.0.0
 # default. The lexicon + OpenRouter Kimi backends cover direction labeling.
 #   torch>=2.0.0
 #   transformers>=4.30.0
+
+# GUI control panel (python -m gui); optional — falls back to a browser window
+pywebview>=5.0

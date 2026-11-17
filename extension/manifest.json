@@ -1,15 +1,16 @@
 {
   "manifest_version": 3,
   "name": "Godel Token Relay",
-  "version": "1.0",
-  "description": "Sniffs the api.godelterminal.com Bearer token from your logged-in session and relays it to a local poller.",
+  "version": "1.1",
+  "description": "Sniffs the Gödel Terminal API Bearer token from your logged-in session and relays it to a local poller.",
   "permissions": ["storage"],
   "host_permissions": [
     "https://app.godelterminal.com/*",
     "http://127.0.0.1:8765/*"
   ],
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js",
+    "scripts": ["background.js"]
   },
   "action": {
     "default_popup": "popup.html",
@@ -28,5 +29,12 @@
       "run_at": "document_start",
       "world": "ISOLATED"
     }
-  ]
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "godel-token-relay@hayden1629",
+      "strict_min_version": "128.0",
+      "data_collection_permissions": { "required": ["none"] }
+    }
+  }
 }

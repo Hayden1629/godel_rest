@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gödel Relay</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Oxygen+Mono&family=Sofia+Sans+Semi+Condensed:wght@400;600;700&display=swap">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="grid-bg"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark"></span>
+      <span class="brand-name">Gödel Relay</span>
+      <span class="pill" id="live-pill">connecting</span>
+    </div>
+    <div class="topbar-right">
+      <span class="dim" id="updated">—</span>
+      <span class="mono" id="clock">--:--:--</span>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="cards">
+      <article class="card" id="card-token">
+        <div class="card-head">
+          <h2>Token</h2>
+          <span class="pill" id="token-pill">—</span>
+        </div>
+        <div class="big mono" id="token-left">—</div>
+        <div class="bar"><div class="bar-fill" id="token-bar"></div></div>
+        <div class="sub" id="token-exp">No token captured</div>
+        <div class="actions">
+          <button class="btn" data-action="check-token">Run expiry check</button>
+        </div>
+      </article>
+
+      <article class="card" id="card-watch">
+        <div class="card-head">
+          <h2>Watcher</h2>
+          <span class="pill" id="watch-pill">—</span>
+        </div>
+        <ul class="svc-list">
+          <li><span class="dot" id="dot-token_server"></span>Token relay<span class="mono dim" id="pid-token_server"></span></li>
+          <li><span class="dot" id="dot-chat_poller"></span>Chat poller<span class="mono dim" id="pid-chat_poller"></span></li>
+        </ul>
+        <div class="actions">
+          <button class="btn btn-mint" data-action="start" id="btn-start">Start watching</button>
+          <button class="btn" data-action="stop" id="btn-stop">Stop</button>
+        </div>
+      </article>
+
+      <article class="card" id="card-backfill">
+        <div class="card-head">
+          <h2>Backfill</h2>
+          <span class="pill" id="backfill-pill">—</span>
+        </div>
+        <div class="sub mono clip" id="backfill-last">Fills the gap since the last run.</div>
+        <div class="actions">
+          <button class="btn btn-mint" data-action="backfill" id="btn-backfill">Fill gap</button>
+          <button class="btn" data-action="backfill-stop" id="btn-backfill-stop">Stop</button>
+        </div>
+      </article>
+
+      <article class="card" id="card-archive">
+        <div class="card-head">
+          <h2>Archive</h2>
+        </div>
+        <dl class="stats">
+          <div><dt>Messages</dt><dd class="mono" id="db-total">—</dd></div>
+          <div><dt>Last hour</dt><dd class="mono" id="db-hour">—</dd></div>
+          <div><dt>Newest</dt><dd class="mono" id="db-newest">—</dd></div>
+          <div><dt>Expiry alerts</dt><dd id="alerts">—</dd></div>
+        </dl>
+      </article>
+    </section>
+
+    <div class="toast" id="toast" hidden></div>
+
+    <section class="panes">
+      <article class="pane pane-chat">
+        <div class="pane-head">
+          <h2>Chat</h2>
+          <div class="chips" id="chips"></div>
+        </div>
+        <div class="feed" id="feed">
+          <div class="empty">No messages yet.</div>
+        </div>
+      </article>
+
+      <article class="pane pane-logs">
+        <div class="pane-head">
+          <h2>Logs</h2>
+          <div class="tabs" role="tablist">
+            <button class="tab active" data-log="chat_poller">Poller</button>
+            <button class="tab" data-log="backfill">Backfill</button>
+            <button class="tab" data-log="token_server">Relay</button>
+          </div>
+        </div>
+        <pre class="log mono" id="log"></pre>
+      </article>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

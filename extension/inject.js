@@ -11,6 +11,8 @@
 // That's what lets you type a command in the terminal and see which endpoint
 // (and payload) answers it.
 (() => {
+  // Substring match: also covers terminal-api.godelterminal.com, where the
+  // app's API moved (Nov 2026).
   const API_HOST = "api.godelterminal.com";
   let lastSeen = null;
 

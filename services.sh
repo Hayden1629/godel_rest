@@ -7,6 +7,8 @@
 #   ./services.sh stop
 #   ./services.sh status
 #   ./services.sh logs       # tail both logs
+#   ./services.sh backfill   # fill the gap since the last run (backfill --gap)
+#   ./services.sh backfill-stop
 #
 # Channels can be overridden:  CHANNELS=general,biotech ./services.sh start
 
@@ -46,8 +48,16 @@ case "${1:-status}" in
       rm -f "$RUN/$name.pid"
     done
     ;;
+  backfill)
+    # fill the hole since the last run (stops once it reaches stored pages)
+    start_one backfill -m server.cli backfill --channels all --gap --delay 0.3
+    ;;
+  backfill-stop)
+    if _alive backfill; then kill "$(_pid backfill)" && echo "  stopped backfill"; fi
+    rm -f "$RUN/backfill.pid"
+    ;;
   status)
-    for name in token_server chat_poller; do
+    for name in token_server chat_poller backfill; do
       if _alive "$name"; then echo "  $name: RUNNING (pid $(_pid "$name"))";
       else echo "  $name: stopped"; fi
     done
@@ -69,5 +79,5 @@ except Exception:
 PY
     ;;
   logs) tail -n 40 -f "$RUN"/token_server.log "$RUN"/chat_poller.log ;;
-  *) echo "usage: ./services.sh {start|stop|status|logs}"; exit 1 ;;
+  *) echo "usage: ./services.sh {start|stop|status|logs|backfill|backfill-stop}"; exit 1 ;;
 esac

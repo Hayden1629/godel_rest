@@ -37,12 +37,52 @@ the tab stays logged in.
    cd godel_rest
    python3 -m server.token_server
    ```
-3. **Load the extension** in Chrome:
-   - `chrome://extensions` → enable *Developer mode* → *Load unpacked* → pick
-     `godel_rest/extension/`.
+3. **Load the extension.** `extension/` is one cross-browser MV3 build
+   (Firefox 128+ / Chrome 121+):
+   - **Firefox, temporary** (gone on restart): `about:debugging#/runtime/this-firefox`
+     → *Load Temporary Add-on…* → pick `extension/manifest.json`.
+   - **Firefox, permanent:** release Firefox only keeps signed add-ons. Sign it
+     unlisted (private, auto-reviewed) with AMO API keys from
+     https://addons.mozilla.org/developers/addon/api/key/ :
+     ```bash
+     cd extension
+     npx web-ext sign --channel unlisted --api-key "$WEB_EXT_API_KEY" --api-secret "$WEB_EXT_API_SECRET"
+     ```
+     then drag the `.xpi` from `web-ext-artifacts/` into Firefox. Bump
+     `version` in `manifest.json` before re-signing — AMO rejects a reused one.
+     If the command times out at *waiting for approval*, download the signed
+     file from *My Add-ons → Manage Status & Versions* instead of re-running.
+   - **Chrome:** `chrome://extensions` → *Developer mode* → *Load unpacked* →
+     pick `extension/`.
+   - Firefox can withhold MV3 site access; the popup shows a *Grant access*
+     button if it has.
 4. **Log in** at https://app.godelterminal.com and click around (open any
    window — DES, chat, etc.) to trigger one API call. The extension popup should
    show *Delivered to local poller ✓* and the receiver prints the token expiry.
+
+The app's API lives at `terminal-api.godelterminal.com` (moved from `api.` in
+Nov 2026 — the old host 401s fresh tokens). Override with `GODEL_API_BASE`.
+
+## Control panel (GUI)
+
+```bash
+.venv/bin/python -m gui            # native window (pywebview), else a Chrome app window
+.venv/bin/python -m gui --browser  # serve on 127.0.0.1:8766 and open a browser tab
+```
+
+Start/stop watching (token relay + chat poller), fill the gap since the last
+run, token expiry countdown, archive stats, a live feed of recent messages
+(filter by channel) and log tails. Buttons run `services.sh`, so the GUI and
+the shell share the same pid files and logs. Needs `pip install pywebview` for
+the native window. The server binds loopback only, checks the `Host` header
+and requires an `X-Godel-GUI` header on actions, so other sites can't drive it.
+
+Expiry alerts: `server.token_watch` pushes to ntfy when the token is within 24h
+of expiring. Schedule it hourly:
+
+```bash
+(crontab -l; echo "0 * * * * cd $PWD && .venv/bin/python -m server.token_watch >> \$HOME/.godel_rest/token_watch.log 2>&1") | crontab -
+```
 
 ## Use
 
@@ -120,7 +160,17 @@ tail -f backfill.log
 ```
 
 Options: `--channels all|<list>`, `--types <comma>` (filter when `all`),
-`--max-pages N` (test cap), `--delay S` (politeness), `--no-resume`.
+`--max-pages N` (test cap), `--delay S` (politeness), `--no-resume`, `--gap`.
+
+**Catching up after downtime:** the default resume walks *older* than what's
+stored, so it never fills a hole between the last run and now. Use `--gap`: it
+walks back from the newest message and stops at the first fully stored page
+(page 1 exempt, so a brief poll doesn't end it early). Minutes, not hours:
+
+```bash
+./services.sh backfill        # = backfill --channels all --gap, pid-tracked, log in run/
+./services.sh backfill-stop
+```
 
 ### Discovering new endpoints
 

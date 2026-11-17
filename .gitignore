@@ -40,3 +40,7 @@ venv/
 
 # crash/debug logs kept locally for diagnosis
 *.log.crashed
+
+# ── browser extension signing (web-ext) ────────────────────────────────────
+extension/web-ext-artifacts/
+extension/.amo-upload-uuid
