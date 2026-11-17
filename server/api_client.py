@@ -5,6 +5,7 @@ picked up without restarting the poller.
 Every call is logged (loguru) to ~/.godel_rest/api.log and kept in an in-memory
 ring buffer (`recent_calls()`) so the dashboard can show what's executing under
 the hood: method, path, params, HTTP status, and elapsed milliseconds."""
+import os
 import time
 from collections import deque
 from pathlib import Path
@@ -14,7 +15,8 @@ from loguru import logger
 
 from . import token_store
 
-BASE = "https://api.godelterminal.com"
+# Moved from api.godelterminal.com (which now 401s fresh tokens) by Nov 2026.
+BASE = os.environ.get("GODEL_API_BASE", "https://terminal-api.godelterminal.com")
 
 # in-memory ring of the last N API calls, newest last — surfaced in the dashboard
 _CALLS: deque = deque(maxlen=300)
