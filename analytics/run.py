@@ -89,6 +89,20 @@ def main():
     th.add_argument("--lookback", type=int, default=365)
     th.add_argument("--out", default="output")
 
+    # bulk reverse-DCF screen across a universe -> CSV + interactive HTML
+    sc = sub.add_parser("screen",
+                        help="screen a whole universe (default S&P 500) -> sortable HTML")
+    sc.add_argument("--out", default="output/sp500_screen",
+                    help="output path stem (writes .csv and .html)")
+    sc.add_argument("--workers", type=int, default=6)
+    sc.add_argument("--period", default="QTR", choices=["QTR", "ANN"])
+    sc.add_argument("--limit", type=int, default=None,
+                    help="only the first N tickers (smoke test)")
+    sc.add_argument("--tickers-file", default=None,
+                    help="custom universe: .txt (one ticker/line) or .csv")
+    sc.add_argument("--refresh", action="store_true",
+                    help="re-download the S&P 500 constituent list")
+
     # full deterministic model: download 3 statements + charts + EV reverse DCF
     md = sub.add_parser("model")
     md.add_argument("ticker")
@@ -134,6 +148,10 @@ def main():
         print("saved:", research.save_price_chart(a.ticker))
     elif a.cmd == "fa":
         _cmd_fa(a)
+    elif a.cmd == "screen":
+        from . import screen
+        screen.run(period=a.period, workers=a.workers, out=a.out,
+                   limit=a.limit, tickers_file=a.tickers_file, refresh=a.refresh)
     elif a.cmd == "model":
         from . import model as model_mod
         res = model_mod.run(a.ticker, period=a.period, forecast=a.forecast,

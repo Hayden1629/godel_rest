@@ -272,6 +272,26 @@ python3 -m analytics.run model BSX --period ANN --forecast 12 \
 python3 -m analytics.run fa BSX --statement cash_flow --period QTR --table
 ```
 
+### Bulk screener (whole S&P 500 → sortable web page)
+
+Runs the model across an entire universe on a lean path (no charts, no
+per-ticker files) and writes a **CSV** plus a **self-contained interactive HTML**
+table you sort/filter in the browser — click any column to rank by it, filter by
+sector or ticker.
+
+```bash
+python3 -m analytics.run screen                       # full S&P 500 (~90s, 8 workers)
+python3 -m analytics.run screen --limit 25            # quick smoke test
+python3 -m analytics.run screen --workers 8 --out output/sp500_screen
+python3 -m analytics.run screen --tickers-file my_list.txt   # custom universe
+open output/sp500_screen.html                         # sort/filter in a browser
+```
+
+Columns: price, market cap, EV, TTM FCF, EV/FCF, implied vs historical FCF
+growth (and the gap), revenue YoY, gross/net margin. The constituent list is
+pulled from a public dataset and cached under `analytics/data/`. Reverse-DCF is
+not meaningful for banks/insurers/REITs (no clean FCF) — the page flags that.
+
 `model BSX` prints price / market cap / EV / TTM FCF / EV·FCF / implied-vs-
 historical FCF growth, and saves charts + statement files under `output/`.
 

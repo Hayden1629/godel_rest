@@ -22,13 +22,18 @@ from .sink import Sink
 def backfill_channel(channel_id: str, title: str = "", sink: Sink | None = None,
                      page_size: int = 50, max_pages: int | None = None,
                      delay: float = 0.25, resume: bool = True,
-                     log_every: int = 10) -> dict:
-    """Backfill one channel. Returns a summary dict."""
+                     gap: bool = False, log_every: int = 10) -> dict:
+    """Backfill one channel. Returns a summary dict.
+
+    gap=True walks back from the newest message and stops at the first page
+    (after page 1) whose messages are all already stored — i.e. it fills the
+    hole between the last run and now without re-walking the whole archive.
+    Page 1 is exempt so a short earlier poll/test doesn't end the walk early."""
     own_sink = sink is None
     sink = sink or Sink()
     label = f"#{title}" if title else channel_id
     cursor = None
-    if resume:
+    if resume and not gap:
         oldest = sink.min_chat_id(channel_id)
         if oldest is not None:
             cursor = oldest  # continue older than what we already have
@@ -57,6 +62,12 @@ def backfill_channel(channel_id: str, title: str = "", sink: Sink | None = None,
             if not content:
                 print(f"[backfill] {label} reached beginning of history", flush=True)
                 break
+            if gap and pages >= 1:
+                ids = [m["id"] for m in content]
+                if sink.count_known_ids(ids) == len(ids):
+                    print(f"[backfill] {label} gap closed at "
+                          f"{content[0].get('createdAt')}", flush=True)
+                    break
             for m in content:
                 sink.save_chat_message(m, parse_tickers(m))
                 saved += 1

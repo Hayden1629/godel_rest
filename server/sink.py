@@ -141,6 +141,16 @@ class Sink:
         )
         return cur.fetchone()[0]
 
+    def count_known_ids(self, ids: list[int]) -> int:
+        """How many of these message ids are already stored."""
+        if not ids:
+            return 0
+        marks = ",".join("?" * len(ids))
+        cur = self.conn.execute(
+            f"SELECT COUNT(*) FROM chat_messages WHERE id IN ({marks})", ids
+        )
+        return cur.fetchone()[0]
+
     def channel_count(self, channel_id: str) -> int:
         cur = self.conn.execute(
             "SELECT COUNT(*) FROM chat_messages WHERE channel_id=?", (channel_id,)

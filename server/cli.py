@@ -75,7 +75,7 @@ def cmd_backfill(args):
           f"{', '.join('#'+t for _, t in chans)}")
     backfill.backfill_many(
         chans, page_size=args.size, max_pages=args.max_pages,
-        delay=args.delay, resume=not args.no_resume,
+        delay=args.delay, resume=not args.no_resume, gap=args.gap,
     )
 
 
@@ -321,6 +321,9 @@ def main():
                    help="seconds between page requests")
     b.add_argument("--no-resume", action="store_true",
                    help="restart from newest instead of oldest stored")
+    b.add_argument("--gap", action="store_true",
+                   help="walk back from newest, stop once pages are already "
+                        "stored (fills the hole since the last run)")
     b.set_defaults(func=cmd_backfill)
 
     n = sub.add_parser("news")
