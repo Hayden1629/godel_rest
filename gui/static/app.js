@@ -321,13 +321,44 @@ function tick() {
   }
 }
 
+// ── views ─────────────────────────────────────────────────────────────────
+// Live polls the feed + logs; Stats has its own (slower) refresh in stats.js.
+function showView(name) {
+  ui.view = name;
+  document.querySelectorAll(".view-tab")
+    .forEach((t) => t.classList.toggle("active", t.dataset.view === name));
+  $("view-live").hidden = name !== "live";
+  $("view-stats").hidden = name !== "stats";
+  if (name === "stats") {
+    GodelStats.show();
+  } else {
+    GodelStats.hide();
+    refreshMessages();
+    refreshLog();
+  }
+}
+
+function bindViews() {
+  for (const tab of document.querySelectorAll(".view-tab")) {
+    tab.addEventListener("click", () => {
+      history.replaceState(null, "", tab.dataset.view === "stats" ? "#stats" : "#");
+      showView(tab.dataset.view);
+    });
+  }
+}
+
+const whenLive = (fn) => () => { if (ui.view === "live") fn(); };
+
+ui.view = "live";
 bindTabs();
 bindActions();
+bindViews();
 refreshState();
 refreshMessages();
 refreshLog();
 tick();
 setInterval(refreshState, STATE_MS);
-setInterval(refreshMessages, MESSAGES_MS);
-setInterval(refreshLog, LOG_MS);
+setInterval(whenLive(refreshMessages), MESSAGES_MS);
+setInterval(whenLive(refreshLog), LOG_MS);
 setInterval(tick, 1000);
+if (location.hash === "#stats") showView("stats");

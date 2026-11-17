@@ -70,9 +70,17 @@ Nov 2026 — the old host 401s fresh tokens). Override with `GODEL_API_BASE`.
 .venv/bin/python -m gui --browser  # serve on 127.0.0.1:8766 and open a browser tab
 ```
 
-Start/stop watching (token relay + chat poller), fill the gap since the last
-run, token expiry countdown, archive stats, a live feed of recent messages
-(filter by channel) and log tails. Buttons run `services.sh`, so the GUI and
+**Live** view: start/stop watching (token relay + chat poller), fill the gap
+since the last run, token expiry countdown, archive stats, a live feed of
+recent messages (filter by channel) and log tails.
+
+**Stats** view (`#stats`): last-24h volume vs the same window a week earlier,
+7-day daily average, active users; messages per day (30/90/180D, click a
+channel to filter, table toggle); activity by hour of day in local time;
+all-time and 7-day counts per channel; top tickers and most active users over
+the last 7 days. Heavy aggregates are cached for 5 minutes (`gui/stats.py`).
+
+Buttons run `services.sh`, so the GUI and
 the shell share the same pid files and logs. Needs `pip install pywebview` for
 the native window. The server binds loopback only, checks the `Host` header
 and requires an `X-Godel-GUI` header on actions, so other sites can't drive it.

@@ -44,3 +44,6 @@ venv/
 # ── browser extension signing (web-ext) ────────────────────────────────────
 extension/web-ext-artifacts/
 extension/.amo-upload-uuid
+
+# ── runtime state ──────────────────────────────────────────────────────────
+user_watch.json

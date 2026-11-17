@@ -16,6 +16,10 @@
       <span class="brand-mark"></span>
       <span class="brand-name">Gödel Relay</span>
       <span class="pill" id="live-pill">connecting</span>
+      <nav class="views" role="tablist">
+        <button class="view-tab active" data-view="live" role="tab">Live</button>
+        <button class="view-tab" data-view="stats" role="tab">Stats</button>
+      </nav>
     </div>
     <div class="topbar-right">
       <span class="dim" id="updated">—</span>
@@ -23,7 +27,7 @@
     </div>
   </header>
 
-  <main class="wrap">
+  <main class="wrap" id="view-live">
     <section class="cards">
       <article class="card" id="card-token">
         <div class="card-head">
@@ -78,8 +82,6 @@
       </article>
     </section>
 
-    <div class="toast" id="toast" hidden></div>
-
     <section class="panes">
       <article class="pane pane-chat">
         <div class="pane-head">
@@ -105,6 +107,99 @@
     </section>
   </main>
 
+  <main class="wrap wrap-scroll" id="view-stats" hidden>
+    <div class="filter-row">
+      <div class="seg" id="range" role="group" aria-label="Date range">
+        <button class="seg-btn" data-days="30">30D</button>
+        <button class="seg-btn active" data-days="90">90D</button>
+        <button class="seg-btn" data-days="180">180D</button>
+      </div>
+      <button class="chip" id="channel-filter" hidden></button>
+      <span class="dim filter-note" id="stats-note">Crunching the archive…</span>
+    </div>
+
+    <section class="tiles">
+      <article class="card tile">
+        <div class="tile-label">Last 24 hours</div>
+        <div class="tile-value mono" id="t-24h">—</div>
+        <div class="tile-delta" id="t-24h-delta"></div>
+      </article>
+      <article class="card tile">
+        <div class="tile-label">Daily average, last 7 days</div>
+        <div class="tile-value mono" id="t-avg">—</div>
+        <div class="tile-delta">messages per day</div>
+      </article>
+      <article class="card tile">
+        <div class="tile-label">Active users, last 7 days</div>
+        <div class="tile-value mono" id="t-users">—</div>
+        <div class="tile-delta">posted at least once</div>
+      </article>
+      <article class="card tile">
+        <div class="tile-label">Archived messages</div>
+        <div class="tile-value mono" id="t-total">—</div>
+        <div class="tile-delta" id="t-channels"></div>
+      </article>
+    </section>
+
+    <section class="chart-row">
+      <article class="pane chart-card">
+        <div class="pane-head">
+          <div>
+            <h2 id="daily-title">Messages per day</h2>
+            <div class="chart-sub" id="daily-sub">UTC days</div>
+          </div>
+          <button class="tab" id="daily-table-toggle">Table</button>
+        </div>
+        <div class="chart" id="daily-chart"></div>
+        <div class="chart-table" id="daily-table" hidden></div>
+      </article>
+      <article class="pane chart-card">
+        <div class="pane-head">
+          <div>
+            <h2>Activity by hour</h2>
+            <div class="chart-sub" id="hourly-sub">Last 30 days, local time</div>
+          </div>
+        </div>
+        <div class="chart" id="hourly-chart"></div>
+      </article>
+    </section>
+
+    <section class="list-row">
+      <article class="pane list-card">
+        <div class="pane-head">
+          <div>
+            <h2>Channels</h2>
+            <div class="chart-sub">All-time messages · click to filter the daily chart</div>
+          </div>
+        </div>
+        <div class="rank" id="channels-list"></div>
+      </article>
+      <article class="pane list-card">
+        <div class="pane-head">
+          <div>
+            <h2>Top tickers</h2>
+            <div class="chart-sub">Mentions, last 7 days</div>
+          </div>
+        </div>
+        <div class="rank" id="tickers-list"></div>
+      </article>
+      <article class="pane list-card">
+        <div class="pane-head">
+          <div>
+            <h2>Most active users</h2>
+            <div class="chart-sub">Messages, last 7 days</div>
+          </div>
+        </div>
+        <div class="rank" id="users-list"></div>
+      </article>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" hidden></div>
+  <div class="tooltip" id="tooltip" hidden></div>
+
+  <!-- stats.js first: app.js may open the Stats view on load (#stats) -->
+  <script src="/static/stats.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

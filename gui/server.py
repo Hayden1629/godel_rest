@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlparse
 
 from server import token_store
 
-from . import actions, state
+from . import actions, state, stats
 
 HOST = "127.0.0.1"
 PORT = 8766
@@ -41,6 +41,7 @@ def static_file(url_path: str) -> Path | None:
 
 class Handler(BaseHTTPRequestHandler):
     titles = state.ChannelTitles()
+    stats_cache = stats.StatsCache()
 
     # ── plumbing ───────────────────────────────────────────────────────────
     def _send(self, code: int, body: bytes, ctype: str) -> None:
@@ -69,6 +70,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, self._state())
             if url.path == "/api/messages":
                 return self._json(200, self._messages(query))
+            if url.path == "/api/stats":
+                return self._json(200, self.stats_cache.overview(self.titles.get()))
+            if url.path == "/api/daily":
+                days = int(query.get("days", ["90"])[0])
+                channel = query.get("channel", [""])[0] or None
+                return self._json(200, {"days": days, "channel": channel,
+                                        "rows": self.stats_cache.daily(days, channel)})
             if url.path == "/api/log":
                 name = query.get("name", [""])[0]
                 return self._json(200, {"name": name, "lines": state.tail_log(name)})
