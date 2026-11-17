@@ -28,8 +28,20 @@ Other confirmed-live routes seen from the app: `/api/v1/aggregates` (POST),
 `/api/v1/watchlists`, `/api/sectors`, `/api/v1/instruments?subset=..`,
 `/api/notifications`, `/api/chat/channels`.
 
+### TRAN (transcripts) — fully discovered (HAR captures 2026-08-07)
+
+| What | Endpoint |
+|------|----------|
+| Transcript list | `POST /api/news/items` body `{"sources":["directory:recommended:Transcripts"],"dateTimeRange":{"startTime":0,"endTime":<now_ms>},"legalEntityIds":[<id>],"pageable":{"size":200}}` — items carry `feedId`, `filename`, `title`, `publicationTime` |
+| Transcript document | `GET /api/news/file-content/{feedId}/{filename}` (alphastreet XML w/ HTML body) |
+
+`legalEntityId` resolves ticker → seriesId → company-profile — the same chain FA
+uses (`analytics.financials.resolve_entity`). Implementation: `server/transcripts.py`;
+CLI `server.cli transcript TICKER [--all]`; terminal `TRAN` returns the listing.
+Also seen in the flow: `OPTIONS/GET /api/v1/exists/instrument/{TICKER}%20US` (ticker existence check).
+
 ### Not yet discovered — capture with the monitor
-`TAS` (time & sales), `HALT` (market halts), `TRAN` (transcripts) did not
+`TAS` (time & sales) and `HALT` (market halts) did not
 respond to blind path probing. Capture them live:
 
 1. `python -m server.token_server`

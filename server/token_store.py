@@ -10,6 +10,12 @@ from typing import Optional
 STORE_DIR = Path.home() / ".godel_rest"
 STORE_PATH = STORE_DIR / "token.json"
 
+# Optional mirror: if ~/.openclaw/token.json exists, keep it in sync on every
+# save. This shares the fresh token with Claude's sandbox (which mounts
+# ~/.openclaw) so it can live-test API code. Creating the file once opts in;
+# deleting it opts out — nothing else to configure.
+MIRROR_PATH = Path.home() / ".openclaw" / "token.json"
+
 
 def _b64url_decode(segment: str) -> bytes:
     padding = "=" * (-len(segment) % 4)
@@ -42,6 +48,11 @@ def save(token: str, exp: Optional[int] = None) -> dict:
     tmp = STORE_PATH.with_suffix(".tmp")
     tmp.write_text(json.dumps(record))
     tmp.replace(STORE_PATH)
+    if MIRROR_PATH.exists():  # opt-in mirror (see note above)
+        try:
+            MIRROR_PATH.write_text(json.dumps(record))
+        except OSError:
+            pass  # mirroring must never break token capture
     return record
 
 

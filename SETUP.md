@@ -138,8 +138,28 @@ the agent to research something and it queries the live DB.)
 python3 -m broker.setup_auth        # paste your app key/secret + the redirect URL
 python3 -m broker.cli auth          # should say authenticated: true
 ```
-Trading is disabled by design — the agent can read your account but cannot place
-orders (needs `GODEL_ALLOW_TRADING=1`, which you set only in your own shell).
+Execution is enabled but gated per trade. The agent can propose an order; it
+reaches Schwab only after you reply YES to that specific proposal. The order
+placed is locked to the one you were shown.
+
+```bash
+python3 -m broker.cli propose AAPL BUY 10 --limit 190   # -> message for you
+python3 -m broker.cli confirm t-1a2b3c4d --yes          # -> order placed
+```
+
+From your side it is two messages: the agent tells you what it is about to do
+and what it costs as a share of the book, you reply YES. Anything else cancels,
+and so does 15 minutes of silence.
+
+If you want the stricter flow — a one-time code you have to type back, which
+survives even the agent being fooled about who is talking — set
+`GODEL_CONFIRM_MODE=code`, and optionally `TELEGRAM_BOT_TOKEN` /
+`TELEGRAM_CHAT_ID` so the code reaches your phone rather than only
+`~/.openclaw/trade-confirmations.log`.
+
+`broker.cli order ... --confirm` still exists for your own shell and needs
+`GODEL_ALLOW_TRADING=1`; it is not on the agent's allowlist. To stop everything:
+`export GODEL_TRADING_HALT=1`.
 
 ## 6. Verify everything
 

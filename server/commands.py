@@ -205,5 +205,15 @@ def halt() -> NotDiscovered:
     return NotDiscovered("HALT", _CAPTURE_HINT)
 
 
-def tran(ticker: str) -> NotDiscovered:
-    return NotDiscovered("TRAN", _CAPTURE_HINT)
+def tran(ticker: str) -> dict:
+    """Earnings-call transcripts: full listing + locally saved files.
+    Fully discovered 2026-08-07 (see server/transcripts.py)."""
+    from . import transcripts
+    return {
+        "ticker": ticker.upper(),
+        "available": transcripts.list_transcripts(ticker),
+        "local": [str(p) for p in
+                  sorted(transcripts.OUT_DIR.glob(f"{ticker.upper()}_*.txt"))],
+        "hint": "fetch: `python -m server.cli transcript <path>`; everything: "
+                f"`python -m server.cli transcript {ticker.upper()} --all`",
+    }

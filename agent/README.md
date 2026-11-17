@@ -22,7 +22,10 @@ router). Key skills:
 
 Every skill points at a concrete, tested command and states the **no-trading**
 rule. Trading is impossible for an agent at two layers: the command allowlist
-(harness) and `GODEL_ALLOW_TRADING` env gate (`broker/orders.py`).
+(harness) and per-trade authorization grants (`broker/authorization.py`): the
+agent may `propose` a trade, but only Hayden's out-of-band confirmation code can
+`confirm` one. The manual `broker.cli order` path and `GODEL_ALLOW_TRADING`
+remain off the allowlist.
 
 ## Plugging into your framework
 
